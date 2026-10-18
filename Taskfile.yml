@@ -1,0 +1,25 @@
+# https://taskfile.dev
+
+version: "3"
+
+tasks:
+  build:
+    desc: "Build the octbox binary"
+    cmds:
+      - go build -o octbox .
+
+  test:
+    desc: "Run the Go tests"
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: "Run go vet and check formatting"
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l .)"
+
+  fmt:
+    desc: "Format the Go sources"
+    cmds:
+      - gofmt -w .
