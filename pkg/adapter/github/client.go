@@ -16,6 +16,7 @@ import (
 
 	"github.com/m-mizutani/octbox/pkg/domain/interfaces"
 	"github.com/m-mizutani/octbox/pkg/domain/model"
+	"github.com/m-mizutani/octbox/pkg/utils/logging"
 	"github.com/m-mizutani/octbox/pkg/utils/safe"
 )
 
@@ -129,8 +130,14 @@ type graphqlResponse struct {
 	Errors []graphqlError  `json:"errors"`
 }
 
-// graphql posts query and decodes data into out. NOT_FOUND errors are not
-// failures when data is present: the missing nodes come back as null.
+// nodeErrorTypes are GraphQL error types that GitHub reports for single nodes
+// while still answering the rest of the query, with null in place of each
+// failed node: NOT_FOUND for deleted items, FORBIDDEN for items of an
+// organization that enforces SAML SSO and has not authorized the token.
+var nodeErrorTypes = map[string]bool{"NOT_FOUND": true, "FORBIDDEN": true}
+
+// graphql posts query and decodes data into out. Errors of nodeErrorTypes are
+// not failures when data is present.
 func (c *Client) graphql(ctx context.Context, query string, variables map[string]any, out any) error {
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
@@ -153,18 +160,23 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 		return goerr.Wrap(err, "failed to decode a GraphQL response")
 	}
 
-	onlyNotFound := true
+	onlyNodeErrors := true
+	forbidden, forbiddenMessage := 0, ""
 	for _, e := range gr.Errors {
 		if e.Type == "RATE_LIMITED" {
 			return goerr.Wrap(&interfaces.RateLimitedError{RetryAfter: graphqlRateLimitWait},
 				"GitHub GraphQL rate limit", goerr.V("message", e.Message))
 		}
-		if e.Type != "NOT_FOUND" {
-			onlyNotFound = false
+		if !nodeErrorTypes[e.Type] {
+			onlyNodeErrors = false
+		}
+		if e.Type == "FORBIDDEN" {
+			forbidden++
+			forbiddenMessage = e.Message
 		}
 	}
 	hasData := len(gr.Data) > 0 && string(gr.Data) != "null"
-	if len(gr.Errors) > 0 && (!onlyNotFound || !hasData) {
+	if len(gr.Errors) > 0 && (!onlyNodeErrors || !hasData) {
 		types := make([]string, 0, len(gr.Errors))
 		for _, e := range gr.Errors {
 			types = append(types, e.Type)
@@ -174,6 +186,10 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	}
 	if !hasData {
 		return goerr.Wrap(&interfaces.APIError{StatusCode: resp.StatusCode}, "GitHub GraphQL response has no data")
+	}
+	if forbidden > 0 {
+		logging.From(ctx).Warn("GitHub withheld items the token may not access",
+			"count", forbidden, "message", forbiddenMessage)
 	}
 	if err := json.Unmarshal(gr.Data, out); err != nil {
 		return goerr.Wrap(err, "failed to decode GraphQL data")

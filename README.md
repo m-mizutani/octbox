@@ -83,6 +83,8 @@ octbox logs in through the OAuth device flow of an OAuth app and requests the `r
 
 If an organization restricts OAuth app access, items in its private repositories do not appear until an organization owner approves the app. See [Approving OAuth apps for your organization](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/approving-oauth-apps-for-your-organization).
 
+If an organization enforces SAML single sign-on, GitHub withholds its items from a token that was authorized without an active SSO session for that organization; octbox lists the other items and writes a warning to the log file. To include them, open `https://github.com/orgs/ORGANIZATION-NAME/sso` in a browser to start an SSO session, then run `octbox auth login` again. See [About authentication with SAML single sign-on](https://docs.github.com/en/authentication/authenticating-with-saml-single-sign-on/about-authentication-with-saml-single-sign-on).
+
 ### Using your own OAuth app
 
 1. On GitHub, open Settings → Developer settings → OAuth Apps → New OAuth App.

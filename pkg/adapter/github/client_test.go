@@ -117,7 +117,7 @@ func TestErrorMappingGraphQLErrors(t *testing.T) {
 			_, _ = w.Write([]byte("[]"))
 			return
 		}
-		writeJSON(w, `{"data":{"viewer":null},"errors":[{"type":"NOT_FOUND","message":"x"},{"type":"FORBIDDEN","message":"y"}]}`)
+		writeJSON(w, `{"data":{"viewer":null},"errors":[{"type":"NOT_FOUND","message":"x"},{"type":"INTERNAL","message":"y"}]}`)
 	})
 	for _, err := range errs[:4] {
 		gt.Equal(t, asAPIError(t, err).StatusCode, http.StatusOK)

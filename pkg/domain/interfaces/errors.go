@@ -51,7 +51,8 @@ func (e *RateLimitedError) Error() string {
 }
 
 // APIError is returned for any other non-2xx response, and for a GraphQL
-// response whose errors are not only NOT_FOUND (StatusCode 200).
+// response whose errors are not only NOT_FOUND or FORBIDDEN on single nodes
+// (StatusCode 200).
 type APIError struct {
 	StatusCode int
 }

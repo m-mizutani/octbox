@@ -141,6 +141,32 @@ func TestSearchItems(t *testing.T) {
 	gt.Equal(t, srv.requests[1].Variables["after"], any("c1"))
 }
 
+func TestSearchItemsSkipsForbiddenNodes(t *testing.T) {
+	ctx := context.Background()
+	_, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":{`+rateLimitJSON+`,"search":{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[`+
+			prNode("PR_1", 482, "", "")+`,null,null]}},
+"errors":[{"type":"FORBIDDEN","path":["search","nodes",1],"message":"Resource protected by organization SAML enforcement."},
+{"type":"FORBIDDEN","path":["search","nodes",2],"message":"Resource protected by organization SAML enforcement."}]}`)
+	})
+
+	page, err := client.SearchItems(ctx, "author:alice is:open", "")
+	gt.NoError(t, err).Required()
+	gt.A(t, page.Items).Length(1).Required()
+	gt.Equal(t, page.Items[0].ID, model.ItemID("PR_1"))
+	gt.Equal(t, page.RateLimit.Remaining, 4321)
+}
+
+func TestSearchItemsForbiddenWithoutData(t *testing.T) {
+	ctx := context.Background()
+	_, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}`)
+	})
+
+	_, err := client.SearchItems(ctx, "author:alice is:open", "")
+	gt.Error(t, err)
+}
+
 func TestCIAndReviewConversion(t *testing.T) {
 	ctx := context.Background()
 	nodes := []string{
