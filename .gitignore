@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Build output
+/octbox
+
 # Test binary, built with `go test -c`
 *.test
 
