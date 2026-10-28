@@ -63,7 +63,7 @@ The filter matches the title, the repository, the number (`#482`), the author (`
 ● P ✓ approved example-org/api#482   Add retry to the webhook sender   @alice  12m
 ```
 
-From the left: `●` unread, `P` pull request or `I` issue (gray for a draft), the CI status (`✓` passed, `✗` failed, `●` running), the review status (`approved`, `changes` requested, `review` required), the repository and number, the title, the author, and the time since the last update.
+From the left: `●` unread, `P` pull request or `I` issue (gray for a draft), the CI status (`✓` passed, `✗` failed, `●` running), the review status (`approved`, `changes` requested, `review` required), the repository and number, the title, the author, and the time since the last update. An unread row has a bold title; a read row shows its repository, title, author, and time in gray, while the type, CI, and review statuses keep their colors.
 
 ## Options
 

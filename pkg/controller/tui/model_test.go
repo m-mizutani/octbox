@@ -504,6 +504,25 @@ func TestKindColor(t *testing.T) {
 	gt.S(t, raw[2]).Contains(selectedGreen)
 }
 
+func TestReadRowsAreGray(t *testing.T) {
+	read := entry("PR_r", model.ItemKindPullRequest, 1, "Read one", time.Minute, false)
+	read.Item.CI = model.CIStateSuccess
+	unread := entry("PR_u", model.ItemKindPullRequest, 2, "Unread one", 2*time.Minute, true)
+	inbox := &fakeInbox{entries: []*model.Entry{read, unread}}
+	m, _ := newModel(t, inbox)
+	press(t, m, "j", "j") // move the reversed selection to the last row
+
+	grayStart := strings.Split(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("X"), "X")[0]
+	raw := strings.Split(m.View().Content, "\n")
+	// The read row: repository and title in gray, CI still green.
+	gt.S(t, raw[1]).Contains(grayStart + "example-org/api#1")
+	gt.S(t, raw[1]).Contains(grayStart + "Read one")
+	gt.S(t, raw[1]).Contains(lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("✓"))
+	// The unread row is not gray and carries the unread mark.
+	gt.S(t, raw[2]).NotContains(grayStart + "example-org/api#2")
+	gt.S(t, ansi.Strip(raw[2])).Contains("●")
+}
+
 func TestEmptyStates(t *testing.T) {
 	inbox := &fakeInbox{}
 	m, _ := newModel(t, inbox)

@@ -137,9 +137,14 @@ func (m *Model) row(e *model.Entry, l rowLayout, selected bool) string {
 	sp := base.Render(" ")
 	item := &e.Item
 
+	// Read rows draw their text in gray. Kind, CI and review keep their
+	// colors so draft, CI and review states can still be told at a glance.
+	text := base
 	unread := base.Render(" ")
 	if e.Unread() {
 		unread = base.Foreground(colorAccent).Render("●")
+	} else {
+		text = base.Foreground(colorGray)
 	}
 
 	kindLetter := "I"
@@ -176,8 +181,8 @@ func (m *Model) row(e *model.Entry, l rowLayout, selected bool) string {
 		review = base.Render(pad("", reviewWidth))
 	}
 
-	repo := base.Render(pad(truncate(repoLabel(item), l.repo), l.repo))
-	titleStyle := base
+	repo := text.Render(pad(truncate(repoLabel(item), l.repo), l.repo))
+	titleStyle := text
 	if e.Unread() {
 		titleStyle = titleStyle.Bold(true)
 	}
@@ -185,8 +190,8 @@ func (m *Model) row(e *model.Entry, l rowLayout, selected bool) string {
 
 	parts := []string{unread, kind, ci, review, repo, title}
 	if l.showAuthor {
-		author := base.Render(pad(truncate("@"+item.Author, authorWidth), authorWidth))
-		age := base.Render(padLeft(formatAge(m.now().Sub(item.UpdatedAt)), ageWidth))
+		author := text.Render(pad(truncate("@"+item.Author, authorWidth), authorWidth))
+		age := text.Render(padLeft(formatAge(m.now().Sub(item.UpdatedAt)), ageWidth))
 		parts = append(parts, author, age)
 	}
 	return strings.Join(parts, sp)
