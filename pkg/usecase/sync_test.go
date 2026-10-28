@@ -172,7 +172,6 @@ func TestSyncFirst(t *testing.T) {
 	gt.Equal(t, st.LastFullSyncAt, t0)
 	gt.Equal(t, st.LastOpenRefreshAt, t0)
 	gt.Equal(t, st.NextRunAt, t0.Add(time.Minute))
-	gt.Equal(t, st.EarliestRunAt, t0.Add(10*time.Second))
 	gt.Equal(t, st.RateRemaining, 4000)
 	gt.True(t, st.LeaseUntil.IsZero())
 }
@@ -555,7 +554,6 @@ func TestSyncRateLimit(t *testing.T) {
 		report, err := syncer.RunOnce(ctx, false)
 		gt.NoError(t, err).Required()
 		gt.Equal(t, report.State.NextRunAt, reset)
-		gt.Equal(t, report.State.EarliestRunAt, reset)
 		st, err := repo.GetSyncState(ctx)
 		gt.NoError(t, err).Required()
 		gt.Equal(t, st.RateRemaining, 150)
@@ -573,7 +571,39 @@ func TestSyncRateLimit(t *testing.T) {
 		gt.NoError(t, err).Required()
 		gt.Equal(t, st.LastError, model.SyncErrorRateLimited)
 		gt.Equal(t, st.NextRunAt, t0.Add(30*time.Second))
-		gt.Equal(t, st.EarliestRunAt, t0.Add(30*time.Second))
+	})
+}
+
+func TestSyncForcedRunsWithoutWaiting(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("right after a sync", func(t *testing.T) {
+		client, _, clk, syncer, _ := setup(t)
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		clk.Advance(time.Second)
+		client.Reset()
+		report, err := syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		gt.False(t, report.Skipped)
+		gt.True(t, len(client.SearchCalls) > 0)
+	})
+
+	t.Run("during the backoff after a failure", func(t *testing.T) {
+		client, _, clk, syncer, _ := setup(t)
+		search := client.SearchItemsFunc
+		client.SearchItemsFunc = func(context.Context, string, string) (*model.SearchPage, error) {
+			return nil, &interfaces.APIError{StatusCode: 502}
+		}
+		_, err := syncer.RunOnce(ctx, false)
+		gt.Error(t, err)
+		clk.Advance(time.Second)
+		client.Reset()
+		client.SearchItemsFunc = search
+		report, err := syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		gt.False(t, report.Skipped)
+		gt.Equal(t, report.State.ConsecutiveFailures, 0)
 	})
 }
 
@@ -880,6 +910,61 @@ func TestSyncUnauthorized(t *testing.T) {
 	})
 }
 
+func TestSyncRunTriggerWaitsForLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	repo, path := newRepo(t)
+	clk := &clock{now: t0}
+	syncer := usecase.NewSyncer(&usecasetest.GitHubClient{}, repo, time.Hour, usecase.WithClock(clk.Now),
+		usecase.WithCheckInterval(20*time.Millisecond))
+
+	trigger := make(chan struct{}, 1)
+	log := newEventLog()
+	done := make(chan error, 1)
+	go func() { done <- syncer.Run(ctx, trigger, log.notify) }()
+	gt.True(t, log.next(t).Running)
+	gt.Equal(t, log.next(t).State.LastSyncAt, t0)
+
+	// Another process holds the lease when r is pressed.
+	other, err := sqlite.New(context.Background(), path)
+	gt.NoError(t, err).Required()
+	t.Cleanup(func() { _ = other.Close() })
+	clk.Advance(time.Second)
+	held, ok, err := other.ClaimSync(context.Background(), clk.Now(), 2*time.Minute, true)
+	gt.NoError(t, err).Required()
+	gt.True(t, ok).Required()
+
+	trigger <- struct{}{}
+	gt.True(t, log.next(t).Running)
+	skipped := log.next(t)
+	gt.False(t, skipped.Running)
+	gt.Equal(t, skipped.State.LastSyncAt, t0)
+
+	// The requested sync runs once the lease is released, long before the
+	// next scheduled run.
+	clk.Advance(time.Second)
+	held.LastSyncAt = clk.Now()
+	held.NextRunAt = clk.Now().Add(time.Hour)
+	held.LeaseUntil = time.Time{}
+	released, err := other.ReleaseSync(context.Background(), held, t0.Add(time.Second+2*time.Minute))
+	gt.NoError(t, err).Required()
+	gt.True(t, released).Required()
+
+	var forced usecase.SyncEvent
+	for {
+		e := log.next(t)
+		if e.Running {
+			forced = log.next(t)
+			break
+		}
+	}
+	gt.Equal(t, forced.State.LastSyncAt, t0.Add(2*time.Second))
+
+	cancel()
+	gt.NoError(t, <-done)
+}
+
 type eventLog struct {
 	mu     sync.Mutex
 	events []usecase.SyncEvent
@@ -929,13 +1014,14 @@ func TestSyncRun(t *testing.T) {
 	gt.False(t, first.Running)
 	gt.Equal(t, first.State.LastSyncAt, t0)
 
-	// A trigger forces a sync once EarliestRunAt has passed.
-	clk.Advance(15 * time.Second)
+	// A trigger forces a sync at once, before the next scheduled run.
+	clk.Advance(time.Second)
 	trigger <- struct{}{}
 	gt.True(t, log.next(t).Running)
 	forced := log.next(t)
 	gt.False(t, forced.Running)
-	gt.Equal(t, forced.State.LastSyncAt, t0.Add(15*time.Second))
+	gt.Equal(t, forced.State.LastSyncAt, t0.Add(time.Second))
+	clk.Advance(14 * time.Second)
 
 	// Another process syncs: its result arrives by the periodic check.
 	other, err := sqlite.New(context.Background(), path)

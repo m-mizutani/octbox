@@ -395,7 +395,7 @@ func (x *Repository) PurgeUncategorized(ctx context.Context) (int, error) {
 const selectSyncState = `
 SELECT viewer, search_cursor, notification_cursor, notification_last_modified,
        last_full_sync_at, last_open_refresh_at, last_sync_at, next_run_at,
-       earliest_run_at, lease_until, consecutive_failures, last_error,
+       lease_until, consecutive_failures, last_error,
        rate_remaining, rate_reset_at
 FROM sync_state WHERE id = 1`
 
@@ -403,11 +403,11 @@ func scanSyncState(s scanner) (*model.SyncState, error) {
 	var (
 		st                                                      model.SyncState
 		searchCursor, notificationCursor, lastFull, lastRefresh sql.NullInt64
-		lastSync, nextRun, earliestRun, leaseUntil, rateResetAt sql.NullInt64
+		lastSync, nextRun, leaseUntil, rateResetAt              sql.NullInt64
 		lastError                                               string
 	)
 	if err := s.Scan(&st.Viewer, &searchCursor, &notificationCursor, &st.NotificationLastModified,
-		&lastFull, &lastRefresh, &lastSync, &nextRun, &earliestRun, &leaseUntil,
+		&lastFull, &lastRefresh, &lastSync, &nextRun, &leaseUntil,
 		&st.ConsecutiveFailures, &lastError, &st.RateRemaining, &rateResetAt); err != nil {
 		return nil, err
 	}
@@ -417,7 +417,6 @@ func scanSyncState(s scanner) (*model.SyncState, error) {
 	st.LastOpenRefreshAt = fromMillis(lastRefresh)
 	st.LastSyncAt = fromMillis(lastSync)
 	st.NextRunAt = fromMillis(nextRun)
-	st.EarliestRunAt = fromMillis(earliestRun)
 	st.LeaseUntil = fromMillis(leaseUntil)
 	st.LastError = model.SyncError(lastError)
 	st.RateResetAt = fromMillis(rateResetAt)
@@ -431,21 +430,21 @@ type execer interface {
 func putSyncState(ctx context.Context, db execer, st *model.SyncState) error {
 	_, err := db.ExecContext(ctx, `
 INSERT INTO sync_state (id, viewer, search_cursor, notification_cursor, notification_last_modified,
-    last_full_sync_at, last_open_refresh_at, last_sync_at, next_run_at, earliest_run_at,
+    last_full_sync_at, last_open_refresh_at, last_sync_at, next_run_at,
     lease_until, consecutive_failures, last_error, rate_remaining, rate_reset_at)
-VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     viewer = excluded.viewer, search_cursor = excluded.search_cursor,
     notification_cursor = excluded.notification_cursor,
     notification_last_modified = excluded.notification_last_modified,
     last_full_sync_at = excluded.last_full_sync_at, last_open_refresh_at = excluded.last_open_refresh_at,
     last_sync_at = excluded.last_sync_at, next_run_at = excluded.next_run_at,
-    earliest_run_at = excluded.earliest_run_at, lease_until = excluded.lease_until,
+    lease_until = excluded.lease_until,
     consecutive_failures = excluded.consecutive_failures, last_error = excluded.last_error,
     rate_remaining = excluded.rate_remaining, rate_reset_at = excluded.rate_reset_at`,
 		st.Viewer, toMillis(st.SearchCursor), toMillis(st.NotificationCursor), st.NotificationLastModified,
 		toMillis(st.LastFullSyncAt), toMillis(st.LastOpenRefreshAt), toMillis(st.LastSyncAt),
-		toMillis(st.NextRunAt), toMillis(st.EarliestRunAt), toMillis(st.LeaseUntil),
+		toMillis(st.NextRunAt), toMillis(st.LeaseUntil),
 		st.ConsecutiveFailures, string(st.LastError), st.RateRemaining, toMillis(st.RateResetAt))
 	if err != nil {
 		return goerr.Wrap(err, "failed to save the sync state")
@@ -482,7 +481,7 @@ func (x *Repository) ClaimSync(ctx context.Context, now time.Time, lease time.Du
 		}
 		state = st
 
-		if now.Before(st.LeaseUntil) || now.Before(st.EarliestRunAt) || (!force && now.Before(st.NextRunAt)) {
+		if now.Before(st.LeaseUntil) || (!force && now.Before(st.NextRunAt)) {
 			return nil
 		}
 

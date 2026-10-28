@@ -341,10 +341,6 @@ func (m *Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // requestSync asks the syncer for a sync without blocking. A sync already
 // requested and not yet taken is enough, so a full channel drops the request.
 func (m *Model) requestSync() {
-	if m.now().Before(m.syncState.EarliestRunAt) {
-		m.setFlash(flashInfo, "Next sync is allowed at "+m.syncState.EarliestRunAt.Local().Format("15:04:05")+".", flashDuration)
-		return
-	}
 	select {
 	case m.trigger <- struct{}{}:
 	default:

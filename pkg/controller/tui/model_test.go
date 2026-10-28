@@ -380,13 +380,19 @@ func TestManualSync(t *testing.T) {
 	gt.Equal(t, len(trigger), 1)
 	<-trigger
 
-	earliest := now.Add(20 * time.Second)
-	_, cmd := m.Update(tui.SyncEventMsg{State: model.SyncState{LastSyncAt: now, EarliestRunAt: earliest, NextRunAt: now.Add(time.Minute), RateRemaining: -1}})
+	// Right after a sync, and while waiting to retry a failed one, r still
+	// asks for a sync.
+	_, cmd := m.Update(tui.SyncEventMsg{State: model.SyncState{LastSyncAt: now, NextRunAt: now.Add(time.Minute), RateRemaining: -1}})
 	run(t, m, cmd)
 	press(t, m, "r")
-	gt.Equal(t, len(trigger), 0)
-	s := screen(m)
-	gt.S(t, s[len(s)-2]).Equal("Next sync is allowed at " + earliest.Local().Format("15:04:05") + ".")
+	gt.Equal(t, len(trigger), 1)
+	<-trigger
+
+	_, cmd = m.Update(tui.SyncEventMsg{State: model.SyncState{LastSyncAt: now, NextRunAt: now.Add(15 * time.Minute),
+		ConsecutiveFailures: 5, LastError: model.SyncErrorAPI, RateRemaining: -1}})
+	run(t, m, cmd)
+	press(t, m, "r")
+	gt.Equal(t, len(trigger), 1)
 }
 
 func TestQuit(t *testing.T) {

@@ -40,7 +40,6 @@ CREATE TABLE sync_state (
     last_open_refresh_at       INTEGER,
     last_sync_at               INTEGER,
     next_run_at                INTEGER,
-    earliest_run_at            INTEGER,
     lease_until                INTEGER,
     consecutive_failures       INTEGER NOT NULL DEFAULT 0,
     last_error                 TEXT    NOT NULL DEFAULT '',

@@ -30,7 +30,6 @@ type SyncState struct {
 	LastOpenRefreshAt        time.Time
 	LastSyncAt               time.Time // end of the last attempt, success or failure
 	NextRunAt                time.Time
-	EarliestRunAt            time.Time // a forced sync may not start before this
 	LeaseUntil               time.Time
 	ConsecutiveFailures      int
 	LastError                SyncError

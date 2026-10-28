@@ -299,7 +299,6 @@ func TestSyncStateRoundTrip(t *testing.T) {
 		LastOpenRefreshAt:        baseTime.Add(3 * time.Second),
 		LastSyncAt:               baseTime.Add(4 * time.Second),
 		NextRunAt:                baseTime.Add(5 * time.Second),
-		EarliestRunAt:            baseTime.Add(6 * time.Second),
 		LeaseUntil:               baseTime.Add(7 * time.Second),
 		ConsecutiveFailures:      3,
 		LastError:                model.SyncErrorNetwork,
@@ -336,23 +335,18 @@ func TestClaimSync(t *testing.T) {
 		gt.True(t, ok)
 	})
 
-	t.Run("next run and earliest run", func(t *testing.T) {
+	t.Run("next run", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		gt.NoError(t, repo.PutSyncState(ctx, &model.SyncState{
 			RateRemaining: -1,
 			NextRunAt:     baseTime.Add(time.Minute),
-			EarliestRunAt: baseTime.Add(10 * time.Second),
 		})).Required()
 
-		_, ok, err := repo.ClaimSync(ctx, baseTime.Add(20*time.Second), lease, false)
+		_, ok, err := repo.ClaimSync(ctx, baseTime.Add(time.Second), lease, false)
 		gt.NoError(t, err).Required()
 		gt.False(t, ok)
 
-		_, ok, err = repo.ClaimSync(ctx, baseTime.Add(5*time.Second), lease, true)
-		gt.NoError(t, err).Required()
-		gt.False(t, ok)
-
-		_, ok, err = repo.ClaimSync(ctx, baseTime.Add(20*time.Second), lease, true)
+		_, ok, err = repo.ClaimSync(ctx, baseTime.Add(time.Second), lease, true)
 		gt.NoError(t, err).Required()
 		gt.True(t, ok)
 	})

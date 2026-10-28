@@ -52,7 +52,7 @@ After you enter the code and approve, the inbox opens and the first sync starts.
 | `/` | Filter: type words; items containing all of them are shown. `Enter` keeps the filter, `Esc` clears it |
 | `m` | Toggle read / unread |
 | `A` | Mark every listed item read |
-| `r` | Sync now (at most once every 10 seconds) |
+| `r` | Sync now, also while waiting to retry a failed sync |
 | `q`, `Ctrl-c` | Quit |
 
 The filter matches the title, the repository, the number (`#482`), the author (`@alice`), and the type (`pr` or `issue`).

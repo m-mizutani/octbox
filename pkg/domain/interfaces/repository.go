@@ -24,7 +24,7 @@ type Repository interface {
 	GetSyncState(ctx context.Context) (*model.SyncState, error)
 	PutSyncState(ctx context.Context, state *model.SyncState) error
 	// ClaimSync sets LeaseUntil = now+lease and returns the state when
-	// LeaseUntil <= now, now >= EarliestRunAt, and (force || now >= NextRunAt).
+	// LeaseUntil <= now and (force || now >= NextRunAt).
 	ClaimSync(ctx context.Context, now time.Time, lease time.Duration, force bool) (*model.SyncState, bool, error)
 	// RenewSync moves LeaseUntil from held to until and reports true only
 	// when LeaseUntil still equals held, i.e. no other process has claimed

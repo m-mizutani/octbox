@@ -23,7 +23,6 @@ const (
 	fullSyncInterval          = 6 * time.Hour
 	openRefreshInterval       = 10 * time.Minute
 	initialNotificationWindow = 30 * 24 * time.Hour
-	minForcedGap              = 10 * time.Second
 	lowRateThreshold          = 200
 	maxSearchPages            = 20
 	resolveChunk              = 50
@@ -248,15 +247,10 @@ func (x *Syncer) RunOnce(ctx context.Context, force bool) (*SyncReport, error) {
 	}
 
 	if syncErr != nil {
-		state.EarliestRunAt = state.NextRunAt
 		x.release(ctx, run, state)
 		return &SyncReport{Full: run.full, Saved: len(run.saved), State: *state}, goerr.Wrap(syncErr, "failed to sync")
 	}
 
-	state.EarliestRunAt = now.Add(minForcedGap)
-	if state.RateRemaining >= 0 && state.RateRemaining < lowRateThreshold {
-		state.EarliestRunAt = laterOf(state.EarliestRunAt, state.RateResetAt)
-	}
 	released, err := x.repo.ReleaseSync(context.WithoutCancel(ctx), state, run.held)
 	if err != nil {
 		return nil, storageErr(err, "failed to save the sync state")
@@ -673,6 +667,9 @@ func (x *Syncer) Run(ctx context.Context, trigger <-chan struct{}, notify func(S
 	var (
 		lastSeen time.Time
 		last     model.SyncState
+		// requested is a trigger not yet served because another process held
+		// the lease; it runs as soon as the lease is free.
+		requested bool
 	)
 	if st, err := x.repo.GetSyncState(ctx); err == nil {
 		last = *st
@@ -686,6 +683,7 @@ func (x *Syncer) Run(ctx context.Context, trigger <-chan struct{}, notify func(S
 			if !report.Skipped {
 				lastSeen = report.State.LastSyncAt
 			}
+			requested = force && report.Skipped
 		}
 		notify(SyncEvent{State: last})
 		switch {
@@ -732,10 +730,10 @@ func (x *Syncer) Run(ctx context.Context, trigger <-chan struct{}, notify func(S
 				notify(SyncEvent{State: last})
 			}
 			now := x.now()
-			if now.Before(state.NextRunAt) || now.Before(state.LeaseUntil) {
+			if now.Before(state.LeaseUntil) || (!requested && now.Before(state.NextRunAt)) {
 				continue
 			}
-			if err := runOnce(false); err != nil {
+			if err := runOnce(requested); err != nil {
 				return err
 			}
 		}
