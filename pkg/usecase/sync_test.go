@@ -194,6 +194,7 @@ func TestSyncIncremental(t *testing.T) {
 	for _, c := range client.SearchCalls {
 		gt.S(t, c.Query).Contains("updated:>=2026-10-01T11:50:00Z")
 		gt.S(t, c.Query).NotContains("is:open")
+		gt.S(t, c.Query).NotContains("archived:false")
 	}
 
 	got := entries(t, repo)
@@ -361,6 +362,85 @@ func TestSyncRefresh(t *testing.T) {
 		st, err := repo.GetSyncState(ctx)
 		gt.NoError(t, err).Required()
 		gt.Equal(t, st.LastOpenRefreshAt, clk.Now())
+	})
+}
+
+func TestSyncArchivedAndDeletedRepositories(t *testing.T) {
+	ctx := context.Background()
+	client, repo, clk, syncer, search := setup(t)
+	keep := issueItem("I_keep", 1, t0.Add(-time.Hour))
+	deleted := issueItem("I_deleted", 2, t0.Add(-time.Hour))
+	archivedPR := prItem("PR_archived", 3, t0.Add(-time.Hour))
+	closedThenArchived := prItem("PR_closed", 4, t0.Add(-time.Hour))
+	search.set("author:alice", keep, deleted, archivedPR, closedThenArchived)
+	_, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+
+	client.GetItemsFunc = func(_ context.Context, ids []model.ItemID) (*model.ItemsResult, error) {
+		result := &model.ItemsResult{RateLimit: model.RateLimit{Remaining: -1}}
+		for _, id := range ids {
+			switch id {
+			case keep.ID:
+				result.Items = append(result.Items, keep)
+			case archivedPR.ID:
+				a := archivedPR
+				a.RepoArchived = true
+				result.Items = append(result.Items, a)
+			case deleted.ID:
+				result.MissingIDs = append(result.MissingIDs, id)
+			}
+		}
+		return result, nil
+	}
+
+	t.Run("a scheduled sync within 10 minutes refreshes no issue", func(t *testing.T) {
+		clk.Advance(61 * time.Second)
+		client.Reset()
+		search.set("author:alice")
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		gt.A(t, client.GetItemsCalls).Length(0)
+		gt.M(t, entries(t, repo)).Length(4)
+	})
+
+	t.Run("a forced sync refreshes every stored item and deletes archived and deleted ones", func(t *testing.T) {
+		clk.Advance(10 * time.Second)
+		client.Reset()
+		c := closedThenArchived
+		c.State = model.ItemStateClosed
+		c.RepoArchived = true
+		c.UpdatedAt = t0
+		search.set("author:alice", c)
+
+		_, err := syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+
+		var refreshed []model.ItemID
+		for _, call := range client.GetItemsCalls {
+			refreshed = append(refreshed, call...)
+		}
+		gt.A(t, refreshed).UnorderedEqual([]model.ItemID{keep.ID, deleted.ID, archivedPR.ID})
+
+		got := entries(t, repo)
+		gt.M(t, got).Length(1)
+		gt.NotNil(t, got["I_keep"])
+
+		st, err := repo.GetSyncState(ctx)
+		gt.NoError(t, err).Required()
+		gt.Equal(t, st.LastOpenRefreshAt, clk.Now())
+	})
+
+	t.Run("an open item of an archived repository found by search is deleted", func(t *testing.T) {
+		clk.Advance(61 * time.Second)
+		client.Reset()
+		k := keep
+		k.RepoArchived = true
+		k.UpdatedAt = t0.Add(3 * time.Minute)
+		search.set("author:alice", k)
+
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		gt.M(t, entries(t, repo)).Length(0)
 	})
 }
 

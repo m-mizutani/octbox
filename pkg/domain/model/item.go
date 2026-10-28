@@ -18,8 +18,9 @@ const (
 	ItemKindPullRequest ItemKind = "pull_request"
 )
 
-// ItemState is the state GitHub reports. Only open items are stored; the
-// syncer deletes an item when it sees it closed or merged.
+// ItemState is the state GitHub reports. Only open items of repositories that
+// are not archived are stored; the syncer deletes an item when it sees it
+// closed, merged, or in an archived repository.
 type ItemState string
 
 const (
@@ -82,6 +83,9 @@ type Item struct {
 	CI        CIState     // CIStateNone for issues
 	Review    ReviewState // ReviewStateNone for issues
 	UpdatedAt time.Time   // GitHub updatedAt, UTC
+	// RepoArchived is true when the repository is archived. Such items are
+	// deleted like closed ones, so it is never stored.
+	RepoArchived bool
 }
 
 // Ref returns the repository and number of the item.

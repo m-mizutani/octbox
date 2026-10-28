@@ -92,8 +92,9 @@ func (x *Repository) SaveItems(ctx context.Context, items []model.Item) error {
 		if err := items[i].Validate(); err != nil {
 			return goerr.Wrap(err, "failed to save items")
 		}
-		if items[i].State != model.ItemStateOpen {
-			return goerr.New("only open items can be saved", goerr.V("item_id", items[i].ID))
+		if items[i].State != model.ItemStateOpen || items[i].RepoArchived {
+			return goerr.New("only open items of repositories that are not archived can be saved",
+				goerr.V("item_id", items[i].ID))
 		}
 	}
 
@@ -331,14 +332,14 @@ func (x *Repository) FindItemsByRefs(ctx context.Context, refs []model.ItemRef) 
 	return result, nil
 }
 
-func (x *Repository) ListPullRequestIDs(ctx context.Context, pendingOnly bool) ([]model.ItemID, error) {
-	query := "SELECT id FROM items WHERE kind = 'pull_request'"
+func (x *Repository) ListRefreshIDs(ctx context.Context, pendingOnly bool) ([]model.ItemID, error) {
+	query := "SELECT id FROM items"
 	if pendingOnly {
-		query += " AND ci_state = 'pending'"
+		query += " WHERE kind = 'pull_request' AND ci_state = 'pending'"
 	}
 	rows, err := x.db.QueryContext(ctx, query+" ORDER BY id")
 	if err != nil {
-		return nil, goerr.Wrap(err, "failed to list pull requests")
+		return nil, goerr.Wrap(err, "failed to list items to refresh")
 	}
 	defer safe.Close(ctx, rows)
 

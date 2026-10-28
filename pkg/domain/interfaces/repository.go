@@ -8,7 +8,8 @@ import (
 )
 
 type Repository interface {
-	// SaveItems stores open items only; any other state is rejected.
+	// SaveItems stores open items of repositories that are not archived only;
+	// any other item is rejected.
 	SaveItems(ctx context.Context, items []model.Item) error
 	DeleteItems(ctx context.Context, ids []model.ItemID) error
 	AddCategory(ctx context.Context, category model.Category, ids []model.ItemID) error
@@ -16,7 +17,9 @@ type Repository interface {
 	ListEntries(ctx context.Context) ([]*model.Entry, error)
 	GetEntry(ctx context.Context, id model.ItemID) (*model.Entry, error) // ErrItemNotFound
 	FindItemsByRefs(ctx context.Context, refs []model.ItemRef) (map[model.ItemRef]*model.Item, error)
-	ListPullRequestIDs(ctx context.Context, pendingOnly bool) ([]model.ItemID, error)
+	// ListRefreshIDs returns the pull requests with pending CI when
+	// pendingOnly is true, and every stored item otherwise.
+	ListRefreshIDs(ctx context.Context, pendingOnly bool) ([]model.ItemID, error)
 	SetRead(ctx context.Context, marks map[model.ItemID]time.Time) error
 	ClearRead(ctx context.Context, id model.ItemID) error
 	// PurgeUncategorized deletes every item that belongs to no category.

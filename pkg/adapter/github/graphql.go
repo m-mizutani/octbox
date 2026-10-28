@@ -27,12 +27,12 @@ fragment ItemFields on Node {
   ... on Issue {
     number title url updatedAt state
     author { login }
-    repository { owner { login } name }
+    repository { owner { login } name isArchived }
   }
   ... on PullRequest {
     number title url updatedAt state isDraft reviewDecision
     author { login }
-    repository { owner { login } name }
+    repository { owner { login } name isArchived }
     latestReviews(first: 10) { nodes { state } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }
@@ -84,7 +84,8 @@ type itemNode struct {
 		Owner struct {
 			Login string `json:"login"`
 		} `json:"owner"`
-		Name string `json:"name"`
+		Name       string `json:"name"`
+		IsArchived bool   `json:"isArchived"`
 	} `json:"repository"`
 	LatestReviews struct {
 		Nodes []struct {
@@ -116,16 +117,17 @@ func (x *itemNode) toModel() (model.Item, bool, error) {
 	}
 
 	item := model.Item{
-		ID:        model.ItemID(x.ID),
-		Kind:      kind,
-		Repo:      model.RepoName{Owner: x.Repository.Owner.Login, Name: x.Repository.Name},
-		Number:    x.Number,
-		Title:     x.Title,
-		URL:       x.URL,
-		Author:    "ghost",
-		CI:        model.CIStateNone,
-		Review:    model.ReviewStateNone,
-		UpdatedAt: x.UpdatedAt.UTC(),
+		ID:           model.ItemID(x.ID),
+		Kind:         kind,
+		Repo:         model.RepoName{Owner: x.Repository.Owner.Login, Name: x.Repository.Name},
+		Number:       x.Number,
+		Title:        x.Title,
+		URL:          x.URL,
+		Author:       "ghost",
+		CI:           model.CIStateNone,
+		Review:       model.ReviewStateNone,
+		UpdatedAt:    x.UpdatedAt.UTC(),
+		RepoArchived: x.Repository.IsArchived,
 	}
 	if x.Author != nil {
 		item.Author = x.Author.Login

@@ -34,8 +34,9 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
 
 ## Sync rules
 
-- Only open items are stored. An item seen closed or merged is deleted with
-  its read mark.
+- Only open items of repositories that are not archived are stored. An item
+  seen closed, merged, or in an archived repository, or no longer returned by
+  GitHub (deleted repository), is deleted with its read mark.
 - A regular sync searches items updated since the previous search start minus
   10 minutes. Every 6 hours a full sync searches all open items and replaces
   the category memberships; items left without a category are deleted. The
@@ -44,8 +45,13 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   and the process does not try a full sync again for 15 minutes.
 - GraphQL requests answered with 502, 503 or 504 are retried after 2 and 5
   seconds (`Syncer.request`, which renews the lease before every attempt).
+- A regular sync searches archived repositories too (pull requests closed
+  right before archiving are seen only there); a full sync uses
+  `archived:false`.
 - CI completion does not change `updatedAt`, so pull requests with pending CI
-  are fetched again every sync, and every open pull request every 10 minutes.
+  are fetched again every sync. Archiving or deleting a repository does not
+  change it either, so every stored item is fetched again by ID every 10
+  minutes and on every forced sync (`r`).
 - The notifications API is called with `If-Modified-Since` and never earlier
   than `NextRunAt`, which already includes `X-Poll-Interval`.
 - Processes sharing a database take turns through the lease in `sync_state`

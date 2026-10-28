@@ -10,7 +10,7 @@ An item is listed when it is open and at least one of the following applies:
 - You commented on it
 - GitHub sends you notifications for it (you watch the repository, you participate, or you subscribed)
 
-Closed and merged items are removed from the list.
+Closed and merged items, and items of archived or deleted repositories, are removed from the list.
 
 ## Requirements
 
@@ -52,7 +52,7 @@ After you enter the code and approve, the inbox opens and the first sync starts.
 | `/` | Filter: type words; items containing all of them are shown. `Enter` keeps the filter, `Esc` clears it |
 | `m` | Toggle read / unread |
 | `A` | Mark every listed item read |
-| `r` | Sync now, also while waiting to retry a failed sync |
+| `r` | Sync now, also while waiting to retry a failed sync. Every listed item is fetched again, so items closed, archived, or deleted on GitHub disappear |
 | `q`, `Ctrl-c` | Quit |
 
 The filter matches the title, the repository, the number (`#482`), the author (`@alice`), and the type (`pr` or `issue`).
@@ -94,7 +94,7 @@ If an organization enforces SAML single sign-on, GitHub withholds its items from
 
 ### API usage
 
-With the default 60-second interval, a sync fetches only items updated since the previous sync, and a full sync runs every 6 hours to notice items you no longer belong to (for example, a withdrawn review request). The GraphQL usage stays around 7–10% of the 5,000 points per hour limit. The notifications API is called with `If-Modified-Since`, so an unchanged response does not count against the rate limit. When fewer than 200 points remain, or GitHub asks octbox to wait, syncing pauses until the limit resets.
+With the default 60-second interval, a sync fetches only items updated since the previous sync, and a full sync runs every 6 hours to notice items you no longer belong to (for example, a withdrawn review request). Every 10 minutes, and whenever you press `r`, octbox also fetches every listed item by its ID, because archiving or deleting a repository does not change the update time of its items. The GraphQL usage stays around 7–10% of the 5,000 points per hour limit. The notifications API is called with `If-Modified-Since`, so an unchanged response does not count against the rate limit. When fewer than 200 points remain, or GitHub asks octbox to wait, syncing pauses until the limit resets.
 
 A request that GitHub answers with 502, 503, or 504 is sent again after 2 and then 5 seconds. If a full sync still fails, octbox runs the regular sync instead, so the list keeps updating and merged pull requests keep disappearing; the full sync is tried again 15 minutes later.
 

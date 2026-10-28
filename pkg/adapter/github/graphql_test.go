@@ -223,6 +223,21 @@ func TestClosedAndMergedStates(t *testing.T) {
 	gt.Equal(t, result.Items[1].State, model.ItemStateClosed)
 }
 
+func TestArchivedRepository(t *testing.T) {
+	ctx := context.Background()
+	archived := strings.Replace(issueNode("I_a", 1, "OPEN"), `"name":"hello-world"`, `"name":"hello-world","isArchived":true`, 1)
+	srv, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":{`+rateLimitJSON+`,"nodes":[`+archived+`,`+prNode("PR_1", 2, "", "")+`]}}`)
+	})
+	result, err := client.GetItems(ctx, []model.ItemID{"I_a", "PR_1"})
+	gt.NoError(t, err).Required()
+	gt.S(t, srv.requests[0].Query).Contains("isArchived")
+	gt.A(t, result.Items).Length(2).Required()
+	gt.True(t, result.Items[0].RepoArchived)
+	gt.Equal(t, result.Items[0].State, model.ItemStateOpen)
+	gt.False(t, result.Items[1].RepoArchived)
+}
+
 func TestGetItems(t *testing.T) {
 	ctx := context.Background()
 	srv, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {

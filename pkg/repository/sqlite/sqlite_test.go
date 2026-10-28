@@ -109,7 +109,7 @@ func TestSaveItems(t *testing.T) {
 		gt.A(t, entries).Length(0)
 	})
 
-	t.Run("closed or merged item saves nothing", func(t *testing.T) {
+	t.Run("closed, merged, or archived item saves nothing", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		closed := issue("I_1", 1, baseTime)
 		closed.State = model.ItemStateClosed
@@ -118,6 +118,10 @@ func TestSaveItems(t *testing.T) {
 		merged := pr("PR_2", 2, baseTime)
 		merged.State = model.ItemStateMerged
 		gt.Error(t, repo.SaveItems(ctx, []model.Item{merged}))
+
+		archived := pr("PR_3", 3, baseTime)
+		archived.RepoArchived = true
+		gt.Error(t, repo.SaveItems(ctx, []model.Item{archived}))
 
 		entries, err := repo.ListEntries(ctx)
 		gt.NoError(t, err).Required()
@@ -181,7 +185,7 @@ func TestListAndGetEntries(t *testing.T) {
 	gt.Error(t, err).Is(interfaces.ErrItemNotFound)
 }
 
-func TestFindAndListPullRequests(t *testing.T) {
+func TestFindAndListRefreshIDs(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newRepo(t)
 	pending := pr("PR_pending", 1, baseTime)
@@ -198,13 +202,13 @@ func TestFindAndListPullRequests(t *testing.T) {
 	gt.M(t, found).Length(1)
 	gt.Equal(t, *found[pending.Ref()], pending)
 
-	ids, err := repo.ListPullRequestIDs(ctx, true)
+	ids, err := repo.ListRefreshIDs(ctx, true)
 	gt.NoError(t, err).Required()
 	gt.A(t, ids).Equal([]model.ItemID{"PR_pending"})
 
-	ids, err = repo.ListPullRequestIDs(ctx, false)
+	ids, err = repo.ListRefreshIDs(ctx, false)
 	gt.NoError(t, err).Required()
-	gt.A(t, ids).UnorderedEqual([]model.ItemID{"PR_pending", "PR_draft"})
+	gt.A(t, ids).UnorderedEqual([]model.ItemID{"PR_pending", "PR_draft", "I_1"})
 }
 
 func TestReadMarks(t *testing.T) {

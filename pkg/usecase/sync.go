@@ -141,6 +141,7 @@ type syncRun struct {
 	held         time.Time // LeaseUntil this process holds
 	first        bool
 	full         bool
+	forced       bool // asked by the user, not by the schedule
 	saved        map[model.ItemID]time.Time
 	deleted      map[model.ItemID]bool
 	rate         model.RateLimit
@@ -222,6 +223,7 @@ func (x *Syncer) RunOnce(ctx context.Context, force bool) (*SyncReport, error) {
 		now:     now,
 		state:   state,
 		held:    state.LeaseUntil,
+		forced:  force,
 		saved:   map[model.ItemID]time.Time{},
 		deleted: map[model.ItemID]bool{},
 		rate:    model.RateLimit{Remaining: -1},
@@ -475,27 +477,27 @@ func (x *Syncer) markAllRead(ctx context.Context) error {
 	return nil
 }
 
-// store saves the open items and deletes the closed or merged ones, and
-// returns the open items.
+// store saves the open items of repositories that are not archived, deletes
+// the others (closed, merged, or archived), and returns the saved items.
 func (x *Syncer) store(ctx context.Context, run *syncRun, items []model.Item) ([]model.Item, error) {
 	if err := x.checkpoint(ctx, run); err != nil {
 		return nil, err
 	}
 	var (
-		open   []model.Item
-		closed []model.ItemID
+		open    []model.Item
+		removed []model.ItemID
 	)
 	for _, item := range items {
-		if item.State == model.ItemStateOpen {
+		if item.State == model.ItemStateOpen && !item.RepoArchived {
 			open = append(open, item)
 		} else {
-			closed = append(closed, item.ID)
+			removed = append(removed, item.ID)
 		}
 	}
 	if err := x.repo.SaveItems(ctx, open); err != nil {
 		return nil, storageErr(err, "failed to save items", goerr.V("count", len(open)))
 	}
-	if err := x.deleteItems(ctx, run, closed); err != nil {
+	if err := x.deleteItems(ctx, run, removed); err != nil {
 		return nil, err
 	}
 	for _, item := range open {
@@ -521,14 +523,16 @@ func (x *Syncer) deleteItems(ctx context.Context, run *syncRun, ids []model.Item
 
 func (x *Syncer) search(ctx context.Context, run *syncRun) error {
 	state := run.state
-	cond := "is:open"
+	// A regular sync also searches archived repositories: pull requests closed
+	// right before their repository is archived are seen closed only there.
+	cond := "archived:false is:open"
 	if !run.full {
 		cond = "updated:>=" + state.SearchCursor.Add(-searchOverlap).UTC().Format("2006-01-02T15:04:05Z")
 	}
 
 	members := map[model.Category][]model.ItemID{}
 	for _, spec := range searchSpecs {
-		query := fmt.Sprintf(spec.format, state.Viewer) + " archived:false " + cond + " sort:updated-desc"
+		query := fmt.Sprintf(spec.format, state.Viewer) + " " + cond + " sort:updated-desc"
 		after := ""
 		for page := 1; ; page++ {
 			var result *model.SearchPage
@@ -685,13 +689,17 @@ func (x *Syncer) notifications(ctx context.Context, run *syncRun) error {
 	return nil
 }
 
+// refresh fetches stored items by ID: pull requests with pending CI on every
+// sync, and every stored item on a full sync, a forced sync, and every
+// openRefreshInterval. Items of deleted repositories, and items whose
+// repository was archived without updating them, are found only here.
 func (x *Syncer) refresh(ctx context.Context, run *syncRun) error {
 	state := run.state
-	pendingOnly := !(run.full || run.now.Sub(state.LastOpenRefreshAt) >= openRefreshInterval)
+	pendingOnly := !(run.full || run.forced || run.now.Sub(state.LastOpenRefreshAt) >= openRefreshInterval)
 
-	all, err := x.repo.ListPullRequestIDs(ctx, pendingOnly)
+	all, err := x.repo.ListRefreshIDs(ctx, pendingOnly)
 	if err != nil {
-		return storageErr(err, "failed to list pull requests")
+		return storageErr(err, "failed to list items to refresh")
 	}
 	ids := make([]model.ItemID, 0, len(all))
 	for _, id := range all {
@@ -709,7 +717,7 @@ func (x *Syncer) refresh(ctx context.Context, run *syncRun) error {
 			return err
 		})
 		if err != nil {
-			return goerr.Wrap(err, "failed to refresh pull requests", goerr.V("count", len(chunk)))
+			return goerr.Wrap(err, "failed to refresh items", goerr.V("count", len(chunk)))
 		}
 		run.observeRate(result.RateLimit)
 		if _, err := x.store(ctx, run, result.Items); err != nil {
