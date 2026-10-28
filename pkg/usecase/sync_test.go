@@ -353,9 +353,10 @@ func TestSyncRefresh(t *testing.T) {
 
 		_, err := syncer.RunOnce(ctx, false)
 		gt.NoError(t, err).Required()
-		gt.A(t, client.GetItemsCalls).Length(2).Required()
-		gt.A(t, client.GetItemsCalls[0]).Length(100)
-		gt.A(t, client.GetItemsCalls[1]).Length(49)
+		gt.A(t, client.GetItemsCalls).Length(3).Required()
+		gt.A(t, client.GetItemsCalls[0]).Length(50)
+		gt.A(t, client.GetItemsCalls[1]).Length(50)
+		gt.A(t, client.GetItemsCalls[2]).Length(49)
 
 		st, err := repo.GetSyncState(ctx)
 		gt.NoError(t, err).Required()
@@ -505,10 +506,107 @@ func TestSyncPaging(t *testing.T) {
 			reviewCalls = append(reviewCalls, c)
 		}
 	}
-	gt.A(t, reviewCalls).Length(20).Required()
+	gt.A(t, reviewCalls).Length(40).Required()
 	gt.Equal(t, reviewCalls[0].After, "")
 	gt.Equal(t, reviewCalls[1].After, "c1")
-	gt.Equal(t, reviewCalls[19].After, "c19")
+	gt.Equal(t, reviewCalls[39].After, "c39")
+}
+
+func TestSyncRetriesGatewayErrors(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("502 then success", func(t *testing.T) {
+		client, repo, clk, _, search := setup(t)
+		var slept []time.Duration
+		syncer := usecase.NewSyncer(client, repo, time.Minute, usecase.WithClock(clk.Now),
+			usecase.WithSleep(func(_ context.Context, d time.Duration) error {
+				slept = append(slept, d)
+				return nil
+			}))
+		failures := 2
+		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
+			if failures > 0 {
+				failures--
+				return nil, &interfaces.APIError{StatusCode: 502}
+			}
+			return search.fn(ctx, query, after)
+		}
+		report, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		gt.Equal(t, report.State.ConsecutiveFailures, 0)
+		gt.A(t, slept).Equal([]time.Duration{2 * time.Second, 5 * time.Second})
+	})
+
+	t.Run("no retry for other errors", func(t *testing.T) {
+		client, repo, clk, _, _ := setup(t)
+		var slept []time.Duration
+		syncer := usecase.NewSyncer(client, repo, time.Minute, usecase.WithClock(clk.Now),
+			usecase.WithSleep(func(_ context.Context, d time.Duration) error {
+				slept = append(slept, d)
+				return nil
+			}))
+		client.SearchItemsFunc = func(context.Context, string, string) (*model.SearchPage, error) {
+			return nil, &interfaces.APIError{StatusCode: 500}
+		}
+		_, err := syncer.RunOnce(ctx, false)
+		gt.Error(t, err)
+		gt.A(t, slept).Length(0)
+		gt.A(t, client.SearchCalls).Length(1)
+	})
+}
+
+func TestSyncFullFailureFallsBack(t *testing.T) {
+	ctx := context.Background()
+	client, repo, clk, syncer, search := setup(t)
+	merged := prItem("PR_m", 9, t0)
+	merged.State = model.ItemStateOpen
+	search.set("author:alice", merged)
+	_, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+	_, ok := entries(t, repo)["PR_m"]
+	gt.True(t, ok).Required()
+
+	// Six hours later every full search fails, and the pull request has
+	// been merged; the regular search does not return it, so only the
+	// pull request refresh can find out.
+	clk.Advance(6 * time.Hour)
+	client.Reset()
+	search.set("author:alice")
+	client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
+		if strings.Contains(query, "is:open") {
+			return nil, &interfaces.APIError{StatusCode: 500}
+		}
+		return search.fn(ctx, query, after)
+	}
+	gone := merged
+	gone.State = model.ItemStateMerged
+	client.GetItemsFunc = func(_ context.Context, ids []model.ItemID) (*model.ItemsResult, error) {
+		return &model.ItemsResult{Items: []model.Item{gone}, RateLimit: model.RateLimit{Remaining: -1}}, nil
+	}
+
+	report, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+	gt.False(t, report.Full)
+	gt.Equal(t, report.State.ConsecutiveFailures, 0)
+	gt.Equal(t, report.State.SearchCursor, t0.Add(6*time.Hour))
+	gt.Equal(t, report.State.LastFullSyncAt, t0)
+	_, ok = entries(t, repo)["PR_m"]
+	gt.False(t, ok)
+
+	// The full sync is not tried again within 15 minutes.
+	clk.Advance(time.Minute)
+	client.Reset()
+	_, err = syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+	for _, c := range client.SearchCalls {
+		gt.S(t, c.Query).NotContains("is:open")
+	}
+
+	// After 15 minutes it is.
+	clk.Advance(15 * time.Minute)
+	client.Reset()
+	_, _ = syncer.RunOnce(ctx, false)
+	gt.S(t, client.SearchCalls[0].Query).Contains("is:open")
 }
 
 func TestSyncLease(t *testing.T) {
@@ -593,7 +691,7 @@ func TestSyncForcedRunsWithoutWaiting(t *testing.T) {
 		client, _, clk, syncer, _ := setup(t)
 		search := client.SearchItemsFunc
 		client.SearchItemsFunc = func(context.Context, string, string) (*model.SearchPage, error) {
-			return nil, &interfaces.APIError{StatusCode: 502}
+			return nil, &interfaces.APIError{StatusCode: 500}
 		}
 		_, err := syncer.RunOnce(ctx, false)
 		gt.Error(t, err)
@@ -642,7 +740,7 @@ func TestSyncFailures(t *testing.T) {
 		search.set("review-requested:alice", prItem("PR_1", 1, t0))
 		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
 			if strings.Contains(query, "author:") {
-				return nil, &interfaces.APIError{StatusCode: 502}
+				return nil, &interfaces.APIError{StatusCode: 500}
 			}
 			return search.fn(ctx, query, after)
 		}
@@ -683,7 +781,7 @@ func TestSyncFailures(t *testing.T) {
 			return &model.ItemsResult{Items: []model.Item{subscribed}, RateLimit: model.RateLimit{Remaining: -1}}, nil
 		}
 		client.GetItemsFunc = func(context.Context, []model.ItemID) (*model.ItemsResult, error) {
-			return nil, &interfaces.APIError{StatusCode: 502}
+			return nil, &interfaces.APIError{StatusCode: 500}
 		}
 		// The first sync fails at the refresh step, after saving I_1 and
 		// I_sub. The retry does not fetch I_sub again (its notification is
@@ -773,7 +871,7 @@ func TestSyncWaitsAsGitHubAsks(t *testing.T) {
 		t.Run("also when the forced sync fails", func(t *testing.T) {
 			clk.Advance(20 * time.Second)
 			client.SearchItemsFunc = func(context.Context, string, string) (*model.SearchPage, error) {
-				return nil, &interfaces.APIError{StatusCode: 502}
+				return nil, &interfaces.APIError{StatusCode: 500}
 			}
 			_, err := syncer.RunOnce(ctx, true)
 			gt.Error(t, err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -23,14 +24,20 @@ const (
 	fullSyncInterval          = 6 * time.Hour
 	openRefreshInterval       = 10 * time.Minute
 	initialNotificationWindow = 30 * 24 * time.Hour
+	fullSyncRetryInterval     = 15 * time.Minute
 	lowRateThreshold          = 200
-	maxSearchPages            = 20
+	maxSearchPages            = 40 // 25 items per page; GitHub search returns at most 1,000
 	resolveChunk              = 50
-	nodesChunk                = 100
+	nodesChunk                = 50
 	baseBackoff               = time.Minute
 	maxBackoff                = 15 * time.Minute
 	stateCheckInterval        = 5 * time.Second
 )
+
+// retryDelays are the waits before each retry of a GraphQL request that got
+// 502, 503 or 504. GitHub answers 502 when a query exceeds its time limit,
+// which happens now and then for the same query that usually succeeds.
+var retryDelays = []time.Duration{2 * time.Second, 5 * time.Second}
 
 // tagStorage marks errors returned by the repository, so a failed sync can
 // be reported as a local storage failure.
@@ -70,10 +77,27 @@ type Syncer struct {
 	now           func() time.Time
 	checkInterval time.Duration
 
+	sleep func(ctx context.Context, d time.Duration) error
+
 	// viewer is the login of the token, asked once per process: the
 	// database may hold another account's data (another --db-path, or a
 	// login whose reset failed).
 	viewer string
+	// fullFailedAt is when this process last fell back from a failed full
+	// sync to a regular one. It is kept in memory only: losing it on restart
+	// costs one more full sync attempt.
+	fullFailedAt time.Time
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 type SyncerOption func(*Syncer)
@@ -90,6 +114,7 @@ func NewSyncer(client interfaces.GitHubClient, repo interfaces.Repository,
 		interval:      interval,
 		now:           time.Now,
 		checkInterval: stateCheckInterval,
+		sleep:         sleepContext,
 	}
 	for _, opt := range opts {
 		opt(x)
@@ -157,6 +182,28 @@ func (x *Syncer) checkpoint(ctx context.Context, run *syncRun) error {
 	run.held = until
 	run.state.LeaseUntil = until
 	return nil
+}
+
+// request renews the lease and calls fn, and calls it again after each of
+// retryDelays while it fails with 502, 503 or 504. The lease is renewed
+// before every attempt, so a retried request never runs on an expired lease.
+func (x *Syncer) request(ctx context.Context, run *syncRun, fn func() error) error {
+	for attempt := 0; ; attempt++ {
+		if err := x.checkpoint(ctx, run); err != nil {
+			return err
+		}
+		err := fn()
+		var apiErr *interfaces.APIError
+		if err == nil || attempt == len(retryDelays) || !errors.As(err, &apiErr) ||
+			(apiErr.StatusCode != http.StatusBadGateway && apiErr.StatusCode != http.StatusServiceUnavailable &&
+				apiErr.StatusCode != http.StatusGatewayTimeout) {
+			return err
+		}
+		logging.From(ctx).Debug("retrying a GitHub request", "status", apiErr.StatusCode, "attempt", attempt+1)
+		if err := x.sleep(ctx, retryDelays[attempt]); err != nil {
+			return err
+		}
+	}
 }
 
 // RunOnce runs one sync when this process can claim it. On failure it
@@ -362,9 +409,24 @@ func (x *Syncer) sync(ctx context.Context, run *syncRun, pollNotifications bool)
 	state := run.state
 
 	run.first = state.SearchCursor.IsZero()
-	run.full = run.first || run.now.Sub(state.LastFullSyncAt) >= fullSyncInterval
+	run.full = run.first || (run.now.Sub(state.LastFullSyncAt) >= fullSyncInterval &&
+		run.now.Sub(x.fullFailedAt) >= fullSyncRetryInterval)
 
-	if err := x.search(ctx, run); err != nil {
+	err := x.search(ctx, run)
+	if err != nil && run.full && !run.first && ctx.Err() == nil {
+		// A full sync searches every open item and fails far more often than
+		// a regular one. Its failure must not stop the regular sync, which
+		// also refreshes pull requests and so removes merged ones.
+		switch classify(err) {
+		case model.SyncErrorAPI, model.SyncErrorNetwork:
+			errutil.Handle(ctx, goerr.Wrap(err, "full sync failed; running a regular sync instead",
+				goerr.V("retry_after", fullSyncRetryInterval)), "full sync failed")
+			x.fullFailedAt = run.now
+			run.full = false
+			err = x.search(ctx, run)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	if pollNotifications {
@@ -469,10 +531,12 @@ func (x *Syncer) search(ctx context.Context, run *syncRun) error {
 		query := fmt.Sprintf(spec.format, state.Viewer) + " archived:false " + cond + " sort:updated-desc"
 		after := ""
 		for page := 1; ; page++ {
-			if err := x.checkpoint(ctx, run); err != nil {
+			var result *model.SearchPage
+			err := x.request(ctx, run, func() error {
+				var err error
+				result, err = x.client.SearchItems(ctx, query, after)
 				return err
-			}
-			result, err := x.client.SearchItems(ctx, query, after)
+			})
 			if err != nil {
 				return goerr.Wrap(err, "failed to search", goerr.V("query", query), goerr.V("page", page))
 			}
@@ -580,10 +644,12 @@ func (x *Syncer) notifications(ctx context.Context, run *syncRun) error {
 		fetched := map[model.ItemRef]bool{}
 		for start := 0; start < len(need); start += resolveChunk {
 			chunk := need[start:min(start+resolveChunk, len(need))]
-			if err := x.checkpoint(ctx, run); err != nil {
+			var result *model.ItemsResult
+			err := x.request(ctx, run, func() error {
+				var err error
+				result, err = x.client.ResolveItems(ctx, chunk)
 				return err
-			}
-			result, err := x.client.ResolveItems(ctx, chunk)
+			})
 			if err != nil {
 				return goerr.Wrap(err, "failed to resolve notified items", goerr.V("count", len(chunk)))
 			}
@@ -636,10 +702,12 @@ func (x *Syncer) refresh(ctx context.Context, run *syncRun) error {
 
 	for start := 0; start < len(ids); start += nodesChunk {
 		chunk := ids[start:min(start+nodesChunk, len(ids))]
-		if err := x.checkpoint(ctx, run); err != nil {
+		var result *model.ItemsResult
+		err := x.request(ctx, run, func() error {
+			var err error
+			result, err = x.client.GetItems(ctx, chunk)
 			return err
-		}
-		result, err := x.client.GetItems(ctx, chunk)
+		})
 		if err != nil {
 			return goerr.Wrap(err, "failed to refresh pull requests", goerr.V("count", len(chunk)))
 		}

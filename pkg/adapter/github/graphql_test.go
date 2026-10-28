@@ -103,7 +103,7 @@ func TestSearchItems(t *testing.T) {
 	gt.Equal(t, req.Variables["q"], any("author:alice is:open"))
 	gt.Nil(t, req.Variables["after"])
 	gt.Equal(t, req.Auth, "bearer test-token")
-	gt.S(t, req.Query).Contains("first: 50")
+	gt.S(t, req.Query).Contains("first: 25")
 
 	gt.Equal(t, page.EndCursor, "c1")
 	gt.True(t, page.HasNextPage)
@@ -238,7 +238,7 @@ func TestGetItems(t *testing.T) {
 	gt.Equal(t, result.RateLimit.Remaining, 4321)
 	gt.A(t, srv.requests[0].Variables["ids"].([]any)).Equal([]any{"PR_1", "PR_gone"})
 
-	ids := make([]model.ItemID, 101)
+	ids := make([]model.ItemID, 51)
 	for i := range ids {
 		ids[i] = model.ItemID(fmt.Sprintf("PR_%d", i))
 	}

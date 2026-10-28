@@ -12,8 +12,11 @@ import (
 	"github.com/m-mizutani/octbox/pkg/domain/model"
 )
 
+// Page and batch sizes are kept small: GitHub answers 502 when a query runs
+// past its time limit, and the CI rollup and reviews of each pull request
+// make every node expensive.
 const (
-	maxGetItems     = 100
+	maxGetItems     = 50
 	maxResolveItems = 50
 )
 
@@ -30,7 +33,7 @@ fragment ItemFields on Node {
     number title url updatedAt state isDraft reviewDecision
     author { login }
     repository { owner { login } name }
-    latestReviews(first: 20) { nodes { state } }
+    latestReviews(first: 10) { nodes { state } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }
 }`
@@ -38,7 +41,7 @@ fragment ItemFields on Node {
 const searchQuery = `
 query Search($q: String!, $after: String) {
   rateLimit { remaining resetAt }
-  search(query: $q, type: ISSUE, first: 50, after: $after) {
+  search(query: $q, type: ISSUE, first: 25, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ...ItemFields }
   }

@@ -96,6 +96,8 @@ If an organization enforces SAML single sign-on, GitHub withholds its items from
 
 With the default 60-second interval, a sync fetches only items updated since the previous sync, and a full sync runs every 6 hours to notice items you no longer belong to (for example, a withdrawn review request). The GraphQL usage stays around 7–10% of the 5,000 points per hour limit. The notifications API is called with `If-Modified-Since`, so an unchanged response does not count against the rate limit. When fewer than 200 points remain, or GitHub asks octbox to wait, syncing pauses until the limit resets.
 
+A request that GitHub answers with 502, 503, or 504 is sent again after 2 and then 5 seconds. If a full sync still fails, octbox runs the regular sync instead, so the list keeps updating and merged pull requests keep disappearing; the full sync is tried again 15 minutes later.
+
 Several octbox processes may share one database; only one of them syncs at a time.
 
 ## License

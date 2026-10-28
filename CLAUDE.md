@@ -39,7 +39,11 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
 - A regular sync searches items updated since the previous search start minus
   10 minutes. Every 6 hours a full sync searches all open items and replaces
   the category memberships; items left without a category are deleted. The
-  subscribed category is never removed by a full sync.
+  subscribed category is never removed by a full sync. A full sync that fails
+  with an API or network error falls back to a regular sync in the same run,
+  and the process does not try a full sync again for 15 minutes.
+- GraphQL requests answered with 502, 503 or 504 are retried after 2 and 5
+  seconds (`Syncer.request`, which renews the lease before every attempt).
 - CI completion does not change `updatedAt`, so pull requests with pending CI
   are fetched again every sync, and every open pull request every 10 minutes.
 - The notifications API is called with `If-Modified-Since` and never earlier
