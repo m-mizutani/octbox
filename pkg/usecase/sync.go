@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/m-mizutani/goerr/v2"
 
 	"github.com/m-mizutani/octbox/pkg/domain/interfaces"
 	"github.com/m-mizutani/octbox/pkg/domain/model"
+	"github.com/m-mizutani/octbox/pkg/utils/async"
 	"github.com/m-mizutani/octbox/pkg/utils/errutil"
 	"github.com/m-mizutani/octbox/pkg/utils/logging"
 )
@@ -26,12 +28,16 @@ const (
 	initialNotificationWindow = 30 * 24 * time.Hour
 	fullSyncRetryInterval     = 15 * time.Minute
 	lowRateThreshold          = 200
-	maxSearchPages            = 40 // 25 items per page; GitHub search returns at most 1,000
+	maxSearchPages            = 20 // 50 items per page; GitHub search returns at most 1,000
 	resolveChunk              = 50
 	nodesChunk                = 50
-	baseBackoff               = time.Minute
-	maxBackoff                = 15 * time.Minute
-	stateCheckInterval        = 5 * time.Second
+	// requestConcurrency is how many GraphQL requests one sync has in flight.
+	// Five concurrent requests took as long each as serial ones, and stay far
+	// below GitHub's limit of 100 concurrent requests.
+	requestConcurrency = 5
+	baseBackoff        = time.Minute
+	maxBackoff         = 15 * time.Minute
+	stateCheckInterval = 5 * time.Second
 )
 
 // retryDelays are the waits before each retry of a GraphQL request that got
@@ -134,10 +140,13 @@ type SyncEvent struct {
 	State   model.SyncState
 }
 
-// syncRun holds what one RunOnce has done so far.
+// syncRun holds what one RunOnce has done so far. Requests run concurrently,
+// so leaseMu guards the lease (held, state.LeaseUntil); everything else is
+// written only by the goroutine running the sync.
 type syncRun struct {
 	now          time.Time
 	state        *model.SyncState
+	leaseMu      sync.Mutex
 	held         time.Time // LeaseUntil this process holds
 	first        bool
 	full         bool
@@ -168,6 +177,8 @@ func storageErr(err error, msg string, opts ...goerr.Option) error {
 // called before every GitHub request and before writing its result, so no
 // write happens after another process could have claimed the sync.
 func (x *Syncer) checkpoint(ctx context.Context, run *syncRun) error {
+	run.leaseMu.Lock()
+	defer run.leaseMu.Unlock()
 	now := x.now()
 	if now.Add(leaseRenewMargin).Before(run.held) {
 		return nil
@@ -236,8 +247,9 @@ func (x *Syncer) RunOnce(ctx context.Context, force bool) (*SyncReport, error) {
 	syncErr := x.sync(ctx, run, pollNotifications)
 
 	logging.From(ctx).Debug("sync finished",
-		"full", run.full, "graphql_requests", run.requests, "saved", len(run.saved),
-		"deleted", len(run.deleted), "rate_remaining", run.rate.Remaining, "error", syncErr)
+		"duration", x.now().Sub(now), "full", run.full, "forced", run.forced,
+		"graphql_requests", run.requests, "saved", len(run.saved),
+		"deleted", len(run.deleted), "rate_remaining", run.rate.Remaining, "failed", syncErr != nil)
 
 	if errors.Is(syncErr, errLeaseLost) {
 		logging.From(ctx).Warn("stopped a sync whose lease expired", "lease_until", run.held)
@@ -414,7 +426,9 @@ func (x *Syncer) sync(ctx context.Context, run *syncRun, pollNotifications bool)
 	run.full = run.first || (run.now.Sub(state.LastFullSyncAt) >= fullSyncInterval &&
 		run.now.Sub(x.fullFailedAt) >= fullSyncRetryInterval)
 
+	started := x.now()
 	err := x.search(ctx, run)
+	logging.From(ctx).Debug("searched items", "duration", x.now().Sub(started), "full", run.full)
 	if err != nil && run.full && !run.first && ctx.Err() == nil {
 		// A full sync searches every open item and fails far more often than
 		// a regular one. Its failure must not stop the regular sync, which
@@ -432,13 +446,17 @@ func (x *Syncer) sync(ctx context.Context, run *syncRun, pollNotifications bool)
 		return err
 	}
 	if pollNotifications {
+		started := x.now()
 		if err := x.notifications(ctx, run); err != nil {
 			return err
 		}
+		logging.From(ctx).Debug("polled notifications", "duration", x.now().Sub(started))
 	}
+	started = x.now()
 	if err := x.refresh(ctx, run); err != nil {
 		return err
 	}
+	logging.From(ctx).Debug("refreshed items", "duration", x.now().Sub(started))
 
 	if err := x.checkpoint(ctx, run); err != nil {
 		return err
@@ -530,20 +548,45 @@ func (x *Syncer) search(ctx context.Context, run *syncRun) error {
 		cond = "updated:>=" + state.SearchCursor.Add(-searchOverlap).UTC().Format("2006-01-02T15:04:05Z")
 	}
 
-	members := map[model.Category][]model.ItemID{}
-	for _, spec := range searchSpecs {
-		query := fmt.Sprintf(spec.format, state.Viewer) + " " + cond + " sort:updated-desc"
-		after := ""
-		for page := 1; ; page++ {
-			var result *model.SearchPage
-			err := x.request(ctx, run, func() error {
-				var err error
-				result, err = x.client.SearchItems(ctx, query, after)
-				return err
-			})
-			if err != nil {
-				return goerr.Wrap(err, "failed to search", goerr.V("query", query), goerr.V("page", page))
+	// The searches run concurrently; the pages of one search are fetched one
+	// after another, as each needs the cursor of the previous one. Each search
+	// appends to its own slot of fetched instead of returning its pages, so
+	// the pages fetched before a failure are kept; Map has waited for every
+	// call when fetched is read.
+	fetched := make([][]*model.SearchPage, len(searchSpecs))
+	_, searchErr := async.Map(ctx, len(searchSpecs), requestConcurrency,
+		func(ctx context.Context, i int) (struct{}, error) {
+			spec := searchSpecs[i]
+			query := fmt.Sprintf(spec.format, state.Viewer) + " " + cond + " sort:updated-desc"
+			after := ""
+			for page := 1; ; page++ {
+				var result *model.SearchPage
+				err := x.request(ctx, run, func() error {
+					var err error
+					result, err = x.client.SearchItems(ctx, query, after)
+					return err
+				})
+				if err != nil {
+					return struct{}{}, goerr.Wrap(err, "failed to search", goerr.V("query", query), goerr.V("page", page))
+				}
+				fetched[i] = append(fetched[i], result)
+				if !result.HasNextPage {
+					return struct{}{}, nil
+				}
+				if page == maxSearchPages {
+					logging.From(ctx).Warn("search results exceed the limit of 1,000 items",
+						"query", query, "category", spec.category)
+					return struct{}{}, nil
+				}
+				after = result.EndCursor
 			}
+		})
+
+	// The fetched pages are stored even when a search failed, as a serial run
+	// stored the pages fetched before a failure.
+	members := map[model.Category][]model.ItemID{}
+	for i, spec := range searchSpecs {
+		for _, result := range fetched[i] {
 			run.observeRate(result.RateLimit)
 			open, err := x.store(ctx, run, result.Items)
 			if err != nil {
@@ -552,16 +595,10 @@ func (x *Syncer) search(ctx context.Context, run *syncRun) error {
 			for _, item := range open {
 				members[spec.category] = append(members[spec.category], item.ID)
 			}
-			if !result.HasNextPage {
-				break
-			}
-			if page == maxSearchPages {
-				logging.From(ctx).Warn("search results exceed the limit of 1,000 items",
-					"query", query, "category", spec.category)
-				break
-			}
-			after = result.EndCursor
 		}
+	}
+	if searchErr != nil {
+		return searchErr
 	}
 
 	if err := x.checkpoint(ctx, run); err != nil {
@@ -644,18 +681,26 @@ func (x *Syncer) notifications(ctx context.Context, run *syncRun) error {
 			}
 		}
 
+		chunks := chunk(need, resolveChunk)
+		results, resolveErr := async.Map(ctx, len(chunks), requestConcurrency,
+			func(ctx context.Context, i int) (*model.ItemsResult, error) {
+				var result *model.ItemsResult
+				err := x.request(ctx, run, func() error {
+					var err error
+					result, err = x.client.ResolveItems(ctx, chunks[i])
+					return err
+				})
+				if err != nil {
+					return nil, goerr.Wrap(err, "failed to resolve notified items", goerr.V("count", len(chunks[i])))
+				}
+				return result, nil
+			})
+
 		var ids []model.ItemID
 		fetched := map[model.ItemRef]bool{}
-		for start := 0; start < len(need); start += resolveChunk {
-			chunk := need[start:min(start+resolveChunk, len(need))]
-			var result *model.ItemsResult
-			err := x.request(ctx, run, func() error {
-				var err error
-				result, err = x.client.ResolveItems(ctx, chunk)
-				return err
-			})
-			if err != nil {
-				return goerr.Wrap(err, "failed to resolve notified items", goerr.V("count", len(chunk)))
+		for _, result := range results {
+			if result == nil {
+				continue
 			}
 			run.observeRate(result.RateLimit)
 			for _, item := range result.Items {
@@ -668,6 +713,9 @@ func (x *Syncer) notifications(ctx context.Context, run *syncRun) error {
 			for _, item := range open {
 				ids = append(ids, item.ID)
 			}
+		}
+		if resolveErr != nil {
+			return resolveErr
 		}
 		// A fetched item supersedes the stored one: its ID may have changed
 		// (SaveItems then removed the old row) or it may be closed.
@@ -708,16 +756,23 @@ func (x *Syncer) refresh(ctx context.Context, run *syncRun) error {
 		}
 	}
 
-	for start := 0; start < len(ids); start += nodesChunk {
-		chunk := ids[start:min(start+nodesChunk, len(ids))]
-		var result *model.ItemsResult
-		err := x.request(ctx, run, func() error {
-			var err error
-			result, err = x.client.GetItems(ctx, chunk)
-			return err
+	chunks := chunk(ids, nodesChunk)
+	results, refreshErr := async.Map(ctx, len(chunks), requestConcurrency,
+		func(ctx context.Context, i int) (*model.ItemsResult, error) {
+			var result *model.ItemsResult
+			err := x.request(ctx, run, func() error {
+				var err error
+				result, err = x.client.GetItems(ctx, chunks[i])
+				return err
+			})
+			if err != nil {
+				return nil, goerr.Wrap(err, "failed to refresh items", goerr.V("count", len(chunks[i])))
+			}
+			return result, nil
 		})
-		if err != nil {
-			return goerr.Wrap(err, "failed to refresh items", goerr.V("count", len(chunk)))
+	for _, result := range results {
+		if result == nil {
+			continue
 		}
 		run.observeRate(result.RateLimit)
 		if _, err := x.store(ctx, run, result.Items); err != nil {
@@ -727,11 +782,23 @@ func (x *Syncer) refresh(ctx context.Context, run *syncRun) error {
 			return err
 		}
 	}
+	if refreshErr != nil {
+		return refreshErr
+	}
 
 	if !pendingOnly {
 		state.LastOpenRefreshAt = run.now
 	}
 	return nil
+}
+
+// chunk splits s into consecutive parts of at most size elements.
+func chunk[T any](s []T, size int) [][]T {
+	var parts [][]T
+	for start := 0; start < len(s); start += size {
+		parts = append(parts, s[start:min(start+size, len(s))])
+	}
+	return parts
 }
 
 // Run syncs whenever the schedule or trigger asks for it, until ctx is done.

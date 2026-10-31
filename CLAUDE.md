@@ -45,6 +45,11 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   and the process does not try a full sync again for 15 minutes.
 - GraphQL requests answered with 502, 503 or 504 are retried after 2 and 5
   seconds (`Syncer.request`, which renews the lease before every attempt).
+- The five searches, and the chunks of 50 items fetched by ID, are requested
+  concurrently, at most 5 at a time (`async.Map`); the pages of one search
+  are fetched in order. Only the requests run concurrently: results are
+  stored by the sync goroutine in a fixed order. A search page holds 50
+  items; 50 is also the largest batch kept under GitHub's 10-second limit.
 - A regular sync searches archived repositories too (pull requests closed
   right before archiving are seen only there); a full sync uses
   `archived:false`.

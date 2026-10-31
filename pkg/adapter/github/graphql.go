@@ -12,12 +12,16 @@ import (
 	"github.com/m-mizutani/octbox/pkg/domain/model"
 )
 
-// Page and batch sizes are kept small: GitHub answers 502 when a query runs
-// past its time limit, and the CI rollup and reviews of each pull request
-// make every node expensive.
+// Page and batch sizes are capped at 50: GitHub answers 502 when a query runs
+// past its 10-second limit, and the CI rollup and reviews of each pull
+// request make every node expensive (50 pull requests took up to 6.5
+// seconds). Pages of a search are fetched one after another, so a larger
+// page saves round trips: 61 items took 3.6 seconds for the first of three
+// pages of 25 and 5.1 seconds for one page.
 const (
 	maxGetItems     = 50
 	maxResolveItems = 50
+	searchPageSize  = 50
 )
 
 const itemFieldsFragment = `
@@ -39,9 +43,9 @@ fragment ItemFields on Node {
 }`
 
 const searchQuery = `
-query Search($q: String!, $after: String) {
+query Search($q: String!, $first: Int!, $after: String) {
   rateLimit { remaining resetAt }
-  search(query: $q, type: ISSUE, first: 25, after: $after) {
+  search(query: $q, type: ISSUE, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ...ItemFields }
   }
@@ -232,7 +236,7 @@ func (c *Client) Viewer(ctx context.Context) (*model.Viewer, error) {
 }
 
 func (c *Client) SearchItems(ctx context.Context, query string, after string) (*model.SearchPage, error) {
-	vars := map[string]any{"q": query, "after": nil}
+	vars := map[string]any{"q": query, "first": searchPageSize, "after": nil}
 	if after != "" {
 		vars["after"] = after
 	}
