@@ -12,22 +12,26 @@ import (
 	"github.com/m-mizutani/octbox/pkg/adapter/herdr"
 )
 
-// layout is the state of a fake herdr: which tab each pane is in, and the
-// names of tabs and panes. A pane without a name is absent from paneLabels.
+// layout is the state of a fake herdr: which tab each pane is in, the names
+// of tabs and panes, and the agent names of sidebar rows. A pane without a
+// name or an agent name is absent from the map.
 type layout struct {
-	mu         sync.Mutex
-	paneTab    map[string]string
-	tabLabels  map[string]string
-	paneLabels map[string]string
+	mu            sync.Mutex
+	paneTab       map[string]string
+	tabLabels     map[string]string
+	paneLabels    map[string]string
+	displayAgents map[string]string
 }
 
 func (l *layout) reply(req received) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var p struct {
-		PaneID string  `json:"pane_id"`
-		TabID  string  `json:"tab_id"`
-		Label  *string `json:"label"`
+		PaneID            string  `json:"pane_id"`
+		TabID             string  `json:"tab_id"`
+		Label             *string `json:"label"`
+		DisplayAgent      string  `json:"display_agent"`
+		ClearDisplayAgent bool    `json:"clear_display_agent"`
 	}
 	_ = json.Unmarshal(req.Params, &p)
 	result := func(v any) string {
@@ -76,8 +80,35 @@ func (l *layout) reply(req received) string {
 			l.paneLabels[p.PaneID] = *p.Label
 		}
 		return result(map[string]any{"type": "pane_info"})
+	case "pane.report_metadata":
+		if _, ok := l.paneTab[p.PaneID]; !ok {
+			return notFound("pane_not_found")
+		}
+		if p.ClearDisplayAgent {
+			delete(l.displayAgents, p.PaneID)
+		} else {
+			l.displayAgents[p.PaneID] = p.DisplayAgent
+		}
+		return result(map[string]any{"type": "ok"})
 	}
 	return notFound("unknown_method")
+}
+
+func (l *layout) displayAgent(paneID string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v, ok := l.displayAgents[paneID]
+	return v, ok
+}
+
+func countMethod(f *fakeHerdr, method string) int {
+	n := 0
+	for _, req := range f.received() {
+		if req.Method == method {
+			n++
+		}
+	}
+	return n
 }
 
 func (l *layout) names() (map[string]string, map[string]string) {
@@ -116,11 +147,55 @@ func TestUnreadCount(t *testing.T) {
 	// ("2", its automatic name).
 	newLayout := func() *layout {
 		return &layout{
-			paneTab:    map[string]string{"w1:p1": "w1:t1"},
-			tabLabels:  map[string]string{"w1:t1": "work", "w1:t2": "2"},
-			paneLabels: map[string]string{},
+			paneTab:       map[string]string{"w1:p1": "w1:t1"},
+			tabLabels:     map[string]string{"w1:t1": "work", "w1:t2": "2"},
+			paneLabels:    map[string]string{},
+			displayAgents: map[string]string{},
 		}
 	}
+
+	t.Run("the sidebar row's agent name shows the count and is cleared", func(t *testing.T) {
+		l := newLayout()
+		l.paneTab["w1:p2"] = "w1:t1"
+		f := newFakeHerdr(t, l.reply)
+		client := herdr.New(f.path, "w1:p1")
+
+		gt.NoError(t, client.ShowUnreadCount(ctx, 2)).Required()
+		name, ok := l.displayAgent("w1:p1")
+		gt.True(t, ok)
+		gt.Equal(t, name, "octbox 2 unread")
+		for _, req := range f.received() {
+			if req.Method == "pane.report_metadata" {
+				gt.Equal(t, params(t, req), map[string]any{
+					"pane_id": "w1:p1", "source": "octbox", "agent": "octbox", "display_agent": "octbox 2 unread",
+				})
+			}
+		}
+
+		gt.NoError(t, client.ShowUnreadCount(ctx, 2)).Required()
+		gt.Equal(t, countMethod(f, "pane.report_metadata"), 1)
+
+		gt.NoError(t, client.ShowUnreadCount(ctx, 1)).Required()
+		name, _ = l.displayAgent("w1:p1")
+		gt.Equal(t, name, "octbox 1 unread")
+
+		gt.NoError(t, client.RemoveUnreadCount(ctx)).Required()
+		_, ok = l.displayAgent("w1:p1")
+		gt.False(t, ok)
+	})
+
+	t.Run("a failed rename does not stop the sidebar row", func(t *testing.T) {
+		l := newLayout()
+		f := newFakeHerdr(t, func(req received) string {
+			if req.Method == "tab.get" {
+				return `{"id":"` + req.ID + `","error":{"code":"internal","message":"failed"}}`
+			}
+			return l.reply(req)
+		})
+		gt.Error(t, herdr.New(f.path, "w1:p1").ShowUnreadCount(ctx, 4))
+		name, _ := l.displayAgent("w1:p1")
+		gt.Equal(t, name, "octbox 4 unread")
+	})
 
 	t.Run("the only pane in its tab names the tab", func(t *testing.T) {
 		l := newLayout()

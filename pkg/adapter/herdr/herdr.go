@@ -44,9 +44,11 @@ type Client struct {
 	lastID     atomic.Uint64
 
 	// renamed is the tab or pane whose name shows the unread count, nil
-	// while none does. Only ShowUnreadCount and RemoveUnreadCount use it, and
-	// they are called one at a time.
-	renamed *renamedTarget
+	// while none does, and sidebarLabel is the agent name octbox set on its
+	// sidebar row, "" while none is set. Only ShowUnreadCount and
+	// RemoveUnreadCount use them, and they are called one at a time.
+	renamed      *renamedTarget
+	sidebarLabel string
 }
 
 var (

@@ -22,8 +22,9 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   unread with an ID and updatedAt pair it has not seen, and shows it on an
   `UpdateIndicator` (the herdr pane); whether the user viewed it is herdr's
   decision. `UnreadCountReporter` reads the unread count from the database
-  every 2 seconds and shows it on an `UnreadCountDisplay` (the herdr tab or
-  pane name); the adapter chooses the tab or the pane from the layout.
+  every 2 seconds and shows it on an `UnreadCountDisplay` (the agent name of
+  the herdr sidebar row, and the tab or pane name); the adapter chooses the
+  tab or the pane from the layout.
 - `pkg/usecase/usecasetest/` — hand-written test doubles of the domain
   interfaces, shared by the tests of `pkg/usecase`, `pkg/controller` and
   `pkg/cli`. Imported only by tests.

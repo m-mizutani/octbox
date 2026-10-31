@@ -111,8 +111,10 @@ func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo inte
 	if detector != nil {
 		// ctx is cancelled here; unregistering must still reach herdr.
 		stopCtx := context.WithoutCancel(ctx)
-		errutil.Handle(stopCtx, detector.Stop(stopCtx), "failed to unregister from herdr")
+		// The names are put back first: the sidebar's agent name belongs to
+		// the agent that Stop releases.
 		errutil.Handle(stopCtx, reporter.Stop(stopCtx), "failed to put back the herdr names")
+		errutil.Handle(stopCtx, detector.Stop(stopCtx), "failed to unregister from herdr")
 	}
 	return err
 }
