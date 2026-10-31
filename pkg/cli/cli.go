@@ -34,6 +34,8 @@ type deps struct {
 	newDevice   func(cfg *config.GitHub) (interfaces.DeviceAuthenticator, error)
 	newClient   interfaces.GitHubClientFactory
 	newBrowser  func() interfaces.Browser
+	// herdrPane returns the herdr pane octbox runs in, or nil outside herdr.
+	herdrPane func() herdrPane
 	// startInbox runs the full-screen inbox with a token that GitHub accepted
 	// or that is stored.
 	startInbox func(ctx context.Context, d *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration) error
@@ -49,6 +51,9 @@ func defaultDeps() *deps {
 		},
 		newClient:  func(token model.GitHubToken) interfaces.GitHubClient { return github.New(token) },
 		newBrowser: func() interfaces.Browser { return browser.New() },
+		herdrPane: func() herdrPane {
+			return lookupHerdrPane(os.LookupEnv)
+		},
 		startInbox: startInbox,
 	}
 }

@@ -65,6 +65,14 @@ The filter matches the title, the repository, the number (`#482`), the author (`
 
 From the left: `●` unread, `P` pull request or `I` issue (gray for a draft), the CI status (`✓` passed, `✗` failed, `●` running), the review status (`approved`, `changes` requested, `review` required), the repository and number, the title, the author, and the time since the last update. An unread row has a bold title; a read row shows its repository, title, author, and time in gray, while the type, CI, and review statuses keep their colors.
 
+### Running in herdr
+
+When octbox runs in a pane of [Herdr TUI](https://herdr.dev/tui/), it appears in the herdr sidebar as the agent `octbox`. When a sync brings a new update to an item (the item is unread and its update time differs from what octbox saw at the previous sync) while you are not viewing that pane, its status turns to done (a filled dot); viewing the pane turns it back to idle. The status does not change for items that are already unread when octbox starts, for items you mark unread with `m`, or for items fetched again without a new update, such as pull requests whose CI is still running.
+
+octbox also shows the number of unread items. In its row of the herdr sidebar, the agent name `octbox` becomes `octbox 2 unread`. In addition, `[octbox] 2 unread` becomes the name of its tab when its pane is the only one in the tab, and the name of its pane when the tab is split (the sidebar shows tab names but, by default, not pane names). The number is read from the database every 2 seconds, so it follows items you open or mark, syncs, and other octbox processes sharing the database. Splitting the tab, closing the other panes, or moving the pane to another tab moves the number, and the name it leaves is put back. A name you set while octbox runs is kept until the number changes. When octbox quits, the sidebar row is removed and the tab or pane gets its previous name back; herdr cannot turn a tab back to its automatic name (its number), so such a tab keeps the same number as a name of its own.
+
+octbox detects herdr from the variables herdr sets in its panes (`HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`) and needs no setup; outside herdr it sends nothing. Requests to herdr's socket contain the pane and tab IDs, the name `octbox`, the state, and the names with the unread count; GitHub tokens and item contents are never sent. When octbox quits, it removes itself from the sidebar. herdr may play a sound when the status turns to done, as set by `[ui.sound]` in herdr's configuration.
+
 ## Options
 
 | Flag | Environment variable | Default | Description |

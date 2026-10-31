@@ -204,3 +204,90 @@ func (x *Browser) Open(_ context.Context, url string) error {
 	x.Opened = append(x.Opened, url)
 	return x.Err
 }
+
+// UpdateIndicator records the calls as "register", "show_update" and
+// "unregister", and returns the matching *Err.
+type UpdateIndicator struct {
+	mu            sync.Mutex
+	Calls         []string
+	RegisterErr   error
+	ShowUpdateErr error
+	UnregisterErr error
+}
+
+var _ interfaces.UpdateIndicator = (*UpdateIndicator)(nil)
+
+func (x *UpdateIndicator) record(call string, err error) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.Calls = append(x.Calls, call)
+	return err
+}
+
+func (x *UpdateIndicator) Register(context.Context) error {
+	return x.record("register", x.RegisterErr)
+}
+
+func (x *UpdateIndicator) ShowUpdate(context.Context) error {
+	return x.record("show_update", x.ShowUpdateErr)
+}
+
+func (x *UpdateIndicator) Unregister(context.Context) error {
+	return x.record("unregister", x.UnregisterErr)
+}
+
+// UnreadCountDisplay records the counts shown and the removals.
+// ShowErrs[i] is returned by the i-th ShowUnreadCount call, nil when absent.
+type UnreadCountDisplay struct {
+	mu       sync.Mutex
+	Shown    []int
+	Removed  int
+	ShowErrs []error
+	// OnShow, when set, runs after each ShowUnreadCount call is recorded.
+	OnShow func(count int)
+}
+
+var _ interfaces.UnreadCountDisplay = (*UnreadCountDisplay)(nil)
+
+func (x *UnreadCountDisplay) ShowUnreadCount(_ context.Context, count int) error {
+	x.mu.Lock()
+	i := len(x.Shown)
+	x.Shown = append(x.Shown, count)
+	var err error
+	if i < len(x.ShowErrs) {
+		err = x.ShowErrs[i]
+	}
+	onShow := x.OnShow
+	x.mu.Unlock()
+	if onShow != nil {
+		onShow(count)
+	}
+	return err
+}
+
+func (x *UnreadCountDisplay) RemoveUnreadCount(context.Context) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.Removed++
+	return nil
+}
+
+// ShownCounts returns a copy of the counts shown so far.
+func (x *UnreadCountDisplay) ShownCounts() []int {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return append([]int(nil), x.Shown...)
+}
+
+// CallCount returns how many times call was recorded.
+func (x *UpdateIndicator) CallCount(call string) int {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	n := 0
+	for _, c := range x.Calls {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}

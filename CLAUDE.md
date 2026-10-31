@@ -18,7 +18,13 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   GitHub and is the only writer of items, category memberships, and the sync
   state (cursor, full sync period, rate limit wait, lease). `Inbox` lists
   items and is the only component that opens items and writes read marks for
-  the user.
+  the user. `UpdateDetector` decides, after each sync, whether an item became
+  unread with an ID and updatedAt pair it has not seen, and shows it on an
+  `UpdateIndicator` (the herdr pane); whether the user viewed it is herdr's
+  decision. `UnreadCountReporter` reads the unread count from the database
+  every 2 seconds and shows it on an `UnreadCountDisplay` (the agent name of
+  the herdr sidebar row, and the tab or pane name); the adapter chooses the
+  tab or the pane from the layout.
 - `pkg/usecase/usecasetest/` — hand-written test doubles of the domain
   interfaces, shared by the tests of `pkg/usecase`, `pkg/controller` and
   `pkg/cli`. Imported only by tests.
@@ -26,10 +32,12 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   errors (`interfaces/`). No I/O.
 - `pkg/repository/sqlite/` — persistence in one SQLite file
   (`modernc.org/sqlite`, no cgo). Schema version in `PRAGMA user_version`.
-- `pkg/adapter/{github,securestore,browser}/` — thin wrappers over GitHub
-  (GraphQL, notifications REST, device flow), the OS secure storage
-  (go-keyring on macOS and Linux, chosen by build tags), and the OS command
-  that opens a URL. No business decisions.
+- `pkg/adapter/{github,securestore,browser,herdr}/` — thin wrappers over
+  GitHub (GraphQL, notifications REST, device flow), the OS secure storage
+  (go-keyring on macOS and Linux, chosen by build tags), the OS command that
+  opens a URL, and herdr's socket API (reports the pane state and renames the
+  tab or pane; used only when `HERDR_ENV=1`, `HERDR_PANE_ID` and
+  `HERDR_SOCKET_PATH` are set). No business decisions.
 - `pkg/utils/` — `logging`, `errutil`, `safe`, `async`.
 
 ## Sync rules
@@ -89,7 +97,9 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
 
 - Assertions use `github.com/m-mizutani/gt`. Test packages are `{name}_test`;
   `xyz.go` is tested in `xyz_test.go`.
-- No test calls GitHub: adapters use `httptest`, the secure storage uses
+- No test calls GitHub or herdr: adapters use `httptest` or a Unix socket
+  listener (under `os.MkdirTemp("", ...)`; macOS limits socket paths to 104
+  bytes, and the Claude Code sandbox refuses binding one), the secure storage uses
   `keyring.MockInit()`, and usecase tests use a SQLite file in `t.TempDir()`
   with the doubles of `usecasetest`. Tests assert stored data and the calls
   made to GitHub, not only the returned error.
