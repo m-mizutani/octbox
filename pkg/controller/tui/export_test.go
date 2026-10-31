@@ -14,6 +14,12 @@ func DisableTick(m *Model) {
 	m.tick = 0
 }
 
+// ListCmd returns the command that reads the list for the current keyword
+// and scope, so a test can deliver its response late.
+func ListCmd(m *Model) tea.Cmd {
+	return m.listCmd()
+}
+
 // RunWithOptions is Run with extra program options (input and output for
 // tests).
 func RunWithOptions(ctx context.Context, m *Model, events <-chan usecase.SyncEvent, opts ...tea.ProgramOption) error {

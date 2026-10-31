@@ -12,7 +12,7 @@ import (
 )
 
 // Inbox lists stored items and is the only component that opens items and
-// records read marks for the user.
+// records read marks and archive marks for the user.
 type Inbox struct {
 	repo    interfaces.Repository
 	browser interfaces.Browser
@@ -24,6 +24,9 @@ func NewInbox(repo interfaces.Repository, browser interfaces.Browser) *Inbox {
 
 // List returns the entries that match filter, most recently updated first.
 func (x *Inbox) List(ctx context.Context, filter model.Filter) ([]*model.Entry, error) {
+	if err := filter.Scope.Validate(); err != nil {
+		return nil, goerr.Wrap(err, "invalid filter")
+	}
 	entries, err := x.repo.ListEntries(ctx)
 	if err != nil {
 		return nil, goerr.Wrap(err, "failed to list entries")
@@ -75,6 +78,27 @@ func (x *Inbox) ToggleRead(ctx context.Context, id model.ItemID) error {
 	}
 	if err != nil {
 		return goerr.Wrap(err, "failed to toggle the read mark", goerr.V("item_id", id))
+	}
+	return nil
+}
+
+// ToggleArchive archives the item when it is not archived, recording
+// seenUpdatedAt (the UpdatedAt the user saw, so that an update stored after
+// the list was read keeps the item in the inbox), and removes the archive
+// mark when it is archived. Read marks are not changed. It returns
+// interfaces.ErrItemNotFound for an unknown ID.
+func (x *Inbox) ToggleArchive(ctx context.Context, id model.ItemID, seenUpdatedAt time.Time) error {
+	entry, err := x.repo.GetEntry(ctx, id)
+	if err != nil {
+		return goerr.Wrap(err, "failed to get the item", goerr.V("item_id", id))
+	}
+	if entry.Archived() {
+		err = x.repo.ClearArchived(ctx, id)
+	} else {
+		err = x.repo.SetArchived(ctx, id, seenUpdatedAt)
+	}
+	if err != nil {
+		return goerr.Wrap(err, "failed to toggle the archive mark", goerr.V("item_id", id))
 	}
 	return nil
 }

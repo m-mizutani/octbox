@@ -118,6 +118,39 @@ func TestUpdateDetector(t *testing.T) {
 		gt.Equal(t, indicator.CallCount("show_update"), 0)
 	})
 
+	t.Run("an archived item updated on GitHub is shown", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		saveUnread(t, repo, prItem("PR_1", 1, t0))
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", t0)).Required()
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		saveUnread(t, repo, prItem("PR_1", 1, t0.Add(time.Minute)))
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 1)
+	})
+
+	t.Run("archiving an unread item is not shown", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		saveUnread(t, repo, prItem("PR_1", 1, t0))
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", t0)).Required()
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 0)
+	})
+
+	t.Run("an unread item taken out of the archive by the user is not shown", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		saveUnread(t, repo, prItem("PR_1", 1, t0))
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", t0)).Required()
+		gt.NoError(t, detector.Start(ctx)).Required()
+		gt.NoError(t, detector.Check(ctx)).Required()
+
+		gt.NoError(t, repo.ClearArchived(ctx, "PR_1")).Required()
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 0)
+	})
+
 	t.Run("an update read before the check is not shown", func(t *testing.T) {
 		repo, indicator, detector := setup(t)
 		saveRead(t, repo, prItem("PR_1", 1, t0))
