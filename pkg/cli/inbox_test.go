@@ -8,7 +8,7 @@ import (
 	"github.com/m-mizutani/octbox/pkg/cli"
 )
 
-func TestHerdrIndicator(t *testing.T) {
+func TestLookupHerdrPane(t *testing.T) {
 	full := map[string]string{
 		"HERDR_ENV":         "1",
 		"HERDR_PANE_ID":     "w1:p2",
@@ -43,7 +43,7 @@ func TestHerdrIndicator(t *testing.T) {
 				v, ok := c.env[key]
 				return v, ok
 			}
-			gt.Equal(t, cli.HerdrIndicator(lookup), c.enabled)
+			gt.Equal(t, cli.LookupHerdrPane(lookup), c.enabled)
 		})
 	}
 }

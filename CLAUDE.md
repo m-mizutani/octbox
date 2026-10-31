@@ -21,7 +21,9 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   the user. `UpdateDetector` decides, after each sync, whether an item became
   unread with an ID and updatedAt pair it has not seen, and shows it on an
   `UpdateIndicator` (the herdr pane); whether the user viewed it is herdr's
-  decision.
+  decision. `UnreadCountReporter` reads the unread count from the database
+  every 2 seconds and shows it on an `UnreadCountDisplay` (the herdr tab or
+  pane name); the adapter chooses the tab or the pane from the layout.
 - `pkg/usecase/usecasetest/` — hand-written test doubles of the domain
   interfaces, shared by the tests of `pkg/usecase`, `pkg/controller` and
   `pkg/cli`. Imported only by tests.
@@ -32,9 +34,9 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
 - `pkg/adapter/{github,securestore,browser,herdr}/` — thin wrappers over
   GitHub (GraphQL, notifications REST, device flow), the OS secure storage
   (go-keyring on macOS and Linux, chosen by build tags), the OS command that
-  opens a URL, and herdr's socket API (reports the pane state; used only when
-  `HERDR_ENV=1`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` are set). No business
-  decisions.
+  opens a URL, and herdr's socket API (reports the pane state and renames the
+  tab or pane; used only when `HERDR_ENV=1`, `HERDR_PANE_ID` and
+  `HERDR_SOCKET_PATH` are set). No business decisions.
 - `pkg/utils/` — `logging`, `errutil`, `safe`, `async`.
 
 ## Sync rules

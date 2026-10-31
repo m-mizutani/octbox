@@ -40,9 +40,20 @@ func runInbox(ctx context.Context, d *deps, storage *config.Storage, gh *config.
 	return d.startInbox(ctx, d, token, repo, interval)
 }
 
-// herdrIndicator returns the herdr pane octbox runs in when herdr provides
+// herdrPane is the herdr pane octbox runs in: its sidebar status shows new
+// updates, and its tab or pane name shows the unread count.
+type herdrPane interface {
+	interfaces.UpdateIndicator
+	interfaces.UnreadCountDisplay
+}
+
+// unreadCountInterval is how often the unread count is read from the
+// database. Opening an item updates the name within this time.
+const unreadCountInterval = 2 * time.Second
+
+// lookupHerdrPane returns the herdr pane octbox runs in when herdr provides
 // HERDR_ENV=1, HERDR_PANE_ID, and HERDR_SOCKET_PATH, and nil otherwise.
-func herdrIndicator(lookup func(string) (string, bool)) interfaces.UpdateIndicator {
+func lookupHerdrPane(lookup func(string) (string, bool)) herdrPane {
 	env, _ := lookup("HERDR_ENV")
 	paneID, _ := lookup("HERDR_PANE_ID")
 	socketPath, _ := lookup("HERDR_SOCKET_PATH")
@@ -60,10 +71,19 @@ func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo inte
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var detector *usecase.UpdateDetector
-	if indicator := d.updateIndicator(); indicator != nil {
-		detector = usecase.NewUpdateDetector(repo, indicator)
+	var (
+		detector   *usecase.UpdateDetector
+		reporter   *usecase.UnreadCountReporter
+		waitReport = func() {}
+	)
+	if pane := d.herdrPane(); pane != nil {
+		detector = usecase.NewUpdateDetector(repo, pane)
 		errutil.Handle(ctx, detector.Start(ctx), "failed to start showing updates in herdr")
+		reporter = usecase.NewUnreadCountReporter(repo, pane, unreadCountInterval)
+		waitReport = async.Go(ctx, "unread count", func(ctx context.Context) error {
+			reporter.Run(ctx)
+			return nil
+		})
 	}
 
 	trigger := make(chan struct{}, 1)
@@ -87,10 +107,12 @@ func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo inte
 	err := tui.Run(ctx, tui.New(ctx, inbox, trigger, time.Now), events)
 	cancel()
 	wait()
+	waitReport()
 	if detector != nil {
 		// ctx is cancelled here; unregistering must still reach herdr.
 		stopCtx := context.WithoutCancel(ctx)
 		errutil.Handle(stopCtx, detector.Stop(stopCtx), "failed to unregister from herdr")
+		errutil.Handle(stopCtx, reporter.Stop(stopCtx), "failed to put back the herdr names")
 	}
 	return err
 }

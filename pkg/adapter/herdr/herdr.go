@@ -27,7 +27,12 @@ const (
 
 	stateIdle    = "idle"
 	stateWorking = "working"
+
+	codeTabNotFound = "tab_not_found"
 )
+
+// tagTabNotFound marks a request herdr rejected because the tab is gone.
+var tagTabNotFound = goerr.NewTag("tab_not_found")
 
 // Client implements interfaces.UpdateIndicator for one herdr pane. herdr
 // shows an agent as done when it goes from working to idle while its pane is
@@ -37,9 +42,17 @@ type Client struct {
 	paneID     string
 	timeout    time.Duration
 	lastID     atomic.Uint64
+
+	// renamed is the tab or pane whose name shows the unread count, nil
+	// while none does. Only ShowUnreadCount and RemoveUnreadCount use it, and
+	// they are called one at a time.
+	renamed *renamedTarget
 }
 
-var _ interfaces.UpdateIndicator = (*Client)(nil)
+var (
+	_ interfaces.UpdateIndicator    = (*Client)(nil)
+	_ interfaces.UnreadCountDisplay = (*Client)(nil)
+)
 
 func New(socketPath, paneID string) *Client {
 	return &Client{socketPath: socketPath, paneID: paneID, timeout: requestTimeout}
@@ -68,8 +81,9 @@ type releaseAgentParams struct {
 }
 
 type response struct {
-	ID    string         `json:"id"`
-	Error *responseError `json:"error"`
+	ID     string          `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *responseError  `json:"error"`
 }
 
 type responseError struct {
@@ -94,17 +108,18 @@ func (x *Client) ShowUpdate(ctx context.Context) error {
 func (x *Client) Unregister(ctx context.Context) error {
 	return x.send(ctx, "pane.release_agent", releaseAgentParams{
 		PaneID: x.paneID, Source: source, Agent: agentName,
-	})
+	}, nil)
 }
 
 func (x *Client) report(ctx context.Context, state string) error {
 	return x.send(ctx, "pane.report_agent", reportAgentParams{
 		PaneID: x.paneID, Source: source, Agent: agentName, State: state,
-	})
+	}, nil)
 }
 
 // send writes one request on a new connection and reads its response line.
-func (x *Client) send(ctx context.Context, method string, params any) error {
+// When result is not nil, the response's result is decoded into it.
+func (x *Client) send(ctx context.Context, method string, params any, result any) error {
 	ctx, cancel := context.WithTimeout(ctx, x.timeout)
 	defer cancel()
 
@@ -142,8 +157,16 @@ func (x *Client) send(ctx context.Context, method string, params any) error {
 			goerr.V("method", method), goerr.V("request_id", req.ID), goerr.V("response_id", resp.ID))
 	}
 	if resp.Error != nil {
-		return goerr.New("herdr rejected the request",
-			goerr.V("method", method), goerr.V("code", resp.Error.Code), goerr.V("message", resp.Error.Message))
+		opts := []goerr.Option{goerr.V("method", method), goerr.V("code", resp.Error.Code), goerr.V("message", resp.Error.Message)}
+		if resp.Error.Code == codeTabNotFound {
+			opts = append(opts, goerr.T(tagTabNotFound))
+		}
+		return goerr.New("herdr rejected the request", opts...)
+	}
+	if result != nil {
+		if err := json.Unmarshal(resp.Result, result); err != nil {
+			return goerr.Wrap(err, "invalid herdr result", goerr.V("method", method))
+		}
 	}
 	return nil
 }
