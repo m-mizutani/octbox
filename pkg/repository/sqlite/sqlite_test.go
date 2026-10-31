@@ -84,13 +84,14 @@ func TestSaveItems(t *testing.T) {
 	t.Run("viewer review fields are saved and overwritten", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		item := pr("PR_1", 1, baseTime)
-		item.ViewerApproved = true
+		item.ViewerApprovedAt = baseTime.Add(-time.Hour)
 		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
 		e, err := repo.GetEntry(ctx, "PR_1")
 		gt.NoError(t, err).Required()
 		gt.Equal(t, e.Item, item)
 
 		item.ViewerReviewRequested = true
+		item.ViewerAddressedAt = baseTime.Add(-time.Minute)
 		item.UpdatedAt = baseTime.Add(time.Minute)
 		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
 		entries, err := repo.ListEntries(ctx)
@@ -98,8 +99,9 @@ func TestSaveItems(t *testing.T) {
 		gt.A(t, entries).Length(1).Required()
 		gt.Equal(t, entries[0].Item, item)
 
-		item.ViewerApproved = false
+		item.ViewerApprovedAt = time.Time{}
 		item.ViewerReviewRequested = false
+		item.ViewerAddressedAt = time.Time{}
 		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
 		found, err := repo.FindItemsByRefs(ctx, []model.ItemRef{item.Ref()})
 		gt.NoError(t, err).Required()

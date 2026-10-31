@@ -24,6 +24,42 @@ const (
 	searchPageSize  = 50
 )
 
+// Comments are fetched only for pull requests the viewer approved and that
+// were updated since. A request for 2 pull requests cost 1 point; the nested
+// connections (50 timeline items x 20 line comments) can make a node large,
+// so a request holds at most 10 queries to stay under GitHub's 10-second
+// limit.
+const (
+	maxCommentQueries    = 10
+	commentTimelineItems = 50
+	commentLineComments  = 20
+)
+
+const lineCommentsSelection = `pageInfo { hasPreviousPage startCursor }
+        nodes { createdAt body author { login } replyTo { author { login } } }`
+
+// timelineSelection and reviewSelection select one aliased node; their
+// arguments are the alias index, the page size, and lineCommentsSelection.
+// Each query has its own variables, which a fragment cannot take.
+const (
+	timelineSelection = `  p%[1]d: node(id: $i%[1]d) { ... on PullRequest {
+    timelineItems(since: $s%[1]d, last: %[2]d, before: $b%[1]d, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW]) {
+      pageInfo { hasPreviousPage startCursor }
+      nodes {
+        __typename
+        ... on IssueComment { createdAt body author { login } }
+        ... on PullRequestReview { id createdAt body author { login }
+          comments(last: %[4]d) { %[3]s } }
+      }
+    }
+  } }
+`
+	reviewSelection = `  p%[1]d: node(id: $i%[1]d) { ... on PullRequestReview {
+    comments(last: %[2]d, before: $b%[1]d) { %[3]s }
+  } }
+`
+)
+
 const itemFieldsFragment = `
 fragment ItemFields on Node {
   __typename
@@ -38,7 +74,7 @@ fragment ItemFields on Node {
     author { login }
     repository { owner { login } name isArchived }
     latestReviews(first: 10) { nodes { state } }
-    viewerLatestReview { state }
+    viewerLatestReview { state submittedAt }
     viewerLatestReviewRequest { id }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }
@@ -99,7 +135,8 @@ type itemNode struct {
 		} `json:"nodes"`
 	} `json:"latestReviews"`
 	ViewerLatestReview *struct {
-		State string `json:"state"`
+		State       string    `json:"state"`
+		SubmittedAt time.Time `json:"submittedAt"`
 	} `json:"viewerLatestReview"`
 	ViewerLatestReviewRequest *struct {
 		ID string `json:"id"`
@@ -160,7 +197,9 @@ func (x *itemNode) toModel() (model.Item, bool, error) {
 		item.IsDraft = x.IsDraft
 		item.CI = x.ciState()
 		item.Review = x.reviewState()
-		item.ViewerApproved = x.ViewerLatestReview != nil && x.ViewerLatestReview.State == "APPROVED"
+		if r := x.ViewerLatestReview; r != nil && r.State == "APPROVED" {
+			item.ViewerApprovedAt = r.SubmittedAt.UTC()
+		}
 		item.ViewerReviewRequested = x.ViewerLatestReviewRequest != nil
 	}
 
@@ -373,5 +412,166 @@ func (c *Client) ResolveItems(ctx context.Context, refs []model.ItemRef) (*model
 		return nil, goerr.Wrap(err, "failed to convert resolved items")
 	}
 	result.Items = items
+	return result, nil
+}
+
+type authorNode struct {
+	Login string `json:"login"`
+}
+
+func loginOf(a *authorNode) string {
+	if a == nil {
+		return "ghost"
+	}
+	return a.Login
+}
+
+type commentNode struct {
+	CreatedAt time.Time   `json:"createdAt"`
+	Body      string      `json:"body"`
+	Author    *authorNode `json:"author"`
+	ReplyTo   *struct {
+		Author *authorNode `json:"author"`
+	} `json:"replyTo"`
+}
+
+func (x *commentNode) toModel() model.Comment {
+	c := model.Comment{Author: loginOf(x.Author), Body: x.Body, CreatedAt: x.CreatedAt.UTC()}
+	if x.ReplyTo != nil {
+		c.ReplyToAuthor = loginOf(x.ReplyTo.Author)
+	}
+	return c
+}
+
+type pageInfoNode struct {
+	HasPreviousPage bool   `json:"hasPreviousPage"`
+	StartCursor     string `json:"startCursor"`
+}
+
+type lineCommentsNode struct {
+	PageInfo pageInfoNode   `json:"pageInfo"`
+	Nodes    []*commentNode `json:"nodes"`
+}
+
+// commentsNode is a pull request answering timelineSelection, or a review
+// answering reviewSelection.
+type commentsNode struct {
+	TimelineItems struct {
+		PageInfo pageInfoNode `json:"pageInfo"`
+		Nodes    []*struct {
+			TypeName string `json:"__typename"`
+			ID       string `json:"id"`
+			commentNode
+			Comments lineCommentsNode `json:"comments"`
+		} `json:"nodes"`
+	} `json:"timelineItems"`
+	Comments lineCommentsNode `json:"comments"`
+}
+
+// buildCommentsQuery returns a query with one aliased node per query,
+// p0..p{n-1}, and its variables.
+func buildCommentsQuery(queries []model.CommentQuery) (string, map[string]any) {
+	var params, fields strings.Builder
+	vars := make(map[string]any, len(queries)*3)
+	for i, q := range queries {
+		if i > 0 {
+			params.WriteString(", ")
+		}
+		var before any
+		if q.Before != "" {
+			before = q.Before
+		}
+		vars[fmt.Sprintf("b%d", i)] = before
+		if q.ReviewID == "" {
+			fmt.Fprintf(&params, "$i%d: ID!, $s%d: DateTime!, $b%d: String", i, i, i)
+			fmt.Fprintf(&fields, timelineSelection, i, commentTimelineItems, lineCommentsSelection, commentLineComments)
+			vars[fmt.Sprintf("i%d", i)] = string(q.ID)
+			vars[fmt.Sprintf("s%d", i)] = q.Since.UTC().Format(time.RFC3339)
+		} else {
+			fmt.Fprintf(&params, "$i%d: ID!, $b%d: String", i, i)
+			fmt.Fprintf(&fields, reviewSelection, i, commentLineComments, lineCommentsSelection)
+			vars[fmt.Sprintf("i%d", i)] = q.ReviewID
+		}
+	}
+	query := "query Comments(" + params.String() + ") {\n  rateLimit { remaining resetAt }\n" + fields.String() + "}"
+	return query, vars
+}
+
+func appendLineComments(page *model.CommentPage, reviewID string, lc *lineCommentsNode) {
+	for _, n := range lc.Nodes {
+		if n != nil {
+			page.Comments = append(page.Comments, n.toModel())
+		}
+	}
+	if lc.PageInfo.HasPreviousPage && reviewID != "" {
+		page.Next = append(page.Next, model.CommentQuery{
+			ID: page.Query.ID, Since: page.Query.Since, ReviewID: reviewID, Before: lc.PageInfo.StartCursor,
+		})
+	}
+}
+
+func (x *commentsNode) toPage(q model.CommentQuery) model.CommentPage {
+	page := model.CommentPage{Query: q, Found: true, Comments: []model.Comment{}}
+	if q.ReviewID != "" {
+		appendLineComments(&page, q.ReviewID, &x.Comments)
+		return page
+	}
+
+	for _, item := range x.TimelineItems.Nodes {
+		if item == nil {
+			continue
+		}
+		switch item.TypeName {
+		case "IssueComment":
+			page.Comments = append(page.Comments, item.toModel())
+		case "PullRequestReview":
+			page.Comments = append(page.Comments, item.toModel())
+			appendLineComments(&page, item.ID, &item.Comments)
+		}
+	}
+	if pi := x.TimelineItems.PageInfo; pi.HasPreviousPage {
+		page.Next = append(page.Next, model.CommentQuery{ID: q.ID, Since: q.Since, Before: pi.StartCursor})
+	}
+	return page
+}
+
+func (c *Client) ListComments(ctx context.Context, queries []model.CommentQuery) (*model.CommentsResult, error) {
+	if len(queries) > maxCommentQueries {
+		return nil, goerr.New("too many comment queries", goerr.V("count", len(queries)), goerr.V("max", maxCommentQueries))
+	}
+	result := &model.CommentsResult{RateLimit: model.RateLimit{Remaining: -1}}
+	if len(queries) == 0 {
+		return result, nil
+	}
+
+	query, vars := buildCommentsQuery(queries)
+	var data map[string]json.RawMessage
+	if err := c.graphql(ctx, query, vars, &data); err != nil {
+		return nil, goerr.Wrap(err, "failed to list comments", goerr.V("count", len(queries)))
+	}
+
+	if raw, ok := data["rateLimit"]; ok {
+		var rl *rateLimitNode
+		if err := json.Unmarshal(raw, &rl); err != nil {
+			return nil, goerr.Wrap(err, "failed to decode the rate limit")
+		}
+		result.RateLimit = rl.toModel()
+	}
+
+	result.Pages = make([]model.CommentPage, len(queries))
+	for i, q := range queries {
+		result.Pages[i] = model.CommentPage{Query: q}
+		raw, ok := data[fmt.Sprintf("p%d", i)]
+		if !ok {
+			continue
+		}
+		var node *commentsNode
+		if err := json.Unmarshal(raw, &node); err != nil {
+			return nil, goerr.Wrap(err, "failed to decode comments", goerr.V("item_id", q.ID), goerr.V("review_id", q.ReviewID))
+		}
+		if node != nil {
+			result.Pages[i] = node.toPage(q)
+		}
+	}
 	return result, nil
 }

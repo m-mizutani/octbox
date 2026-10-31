@@ -25,18 +25,21 @@ func TestUnreadCountReporter(t *testing.T) {
 		gt.A(t, display.ShownCounts()).Equal([]int{2})
 	})
 
-	t.Run("Report leaves out items approved by the viewer until a review is requested again", func(t *testing.T) {
+	t.Run("Report leaves out items approved by the viewer until a review is requested again or a comment is addressed to the viewer", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		approved := prItem("PR_1", 1, t0)
-		approved.ViewerApproved = true
+		approved.ViewerApprovedAt = t0
 		rerequested := prItem("PR_2", 2, t0)
-		rerequested.ViewerApproved = true
+		rerequested.ViewerApprovedAt = t0
 		rerequested.ViewerReviewRequested = true
-		saveUnread(t, repo, approved, rerequested, issueItem("I_1", 3, t0))
+		addressed := prItem("PR_3", 3, t0.Add(time.Minute))
+		addressed.ViewerApprovedAt = t0
+		addressed.ViewerAddressedAt = t0.Add(time.Minute)
+		saveUnread(t, repo, approved, rerequested, addressed, issueItem("I_1", 4, t0))
 		display := &usecasetest.UnreadCountDisplay{}
 
 		gt.NoError(t, usecase.NewUnreadCountReporter(repo, display, time.Hour).Report(ctx)).Required()
-		gt.A(t, display.ShownCounts()).Equal([]int{2})
+		gt.A(t, display.ShownCounts()).Equal([]int{3})
 	})
 
 	t.Run("Report shows zero for an empty database", func(t *testing.T) {

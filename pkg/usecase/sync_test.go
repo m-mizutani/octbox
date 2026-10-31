@@ -386,6 +386,220 @@ func TestSyncRefresh(t *testing.T) {
 	})
 }
 
+func TestSyncViewerAddressedComments(t *testing.T) {
+	ctx := context.Background()
+	client, repo, clk, syncer, search := setup(t)
+	approvedAt := t0.Add(-2 * time.Hour)
+	approved := prItem("PR_1", 1, approvedAt.Add(time.Second))
+	approved.ViewerApprovedAt = approvedAt
+	requested := prItem("PR_2", 2, t0.Add(-time.Hour))
+	requested.ViewerApprovedAt = approvedAt
+	requested.ViewerReviewRequested = true
+	notApproved := prItem("PR_3", 3, t0.Add(-time.Hour))
+	search.set("reviewed-by:alice", approved, requested, notApproved)
+
+	var (
+		mu       sync.Mutex
+		comments []model.Comment
+		failWith error
+	)
+	client.ListCommentsFunc = func(_ context.Context, queries []model.CommentQuery) (*model.CommentsResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failWith != nil {
+			return nil, failWith
+		}
+		result := &model.CommentsResult{RateLimit: model.RateLimit{Remaining: -1}}
+		for _, q := range queries {
+			result.Pages = append(result.Pages, model.CommentPage{Query: q, Found: true, Comments: comments})
+		}
+		return result, nil
+	}
+	listed := func(t *testing.T) []model.ItemID {
+		t.Helper()
+		list, err := usecase.NewInbox(repo, &usecasetest.Browser{}).List(ctx, model.NewFilter(""))
+		gt.NoError(t, err).Required()
+		ids := make([]model.ItemID, 0, len(list))
+		for _, e := range list {
+			ids = append(ids, e.Item.ID)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		return ids
+	}
+
+	t.Run("comments are read for an approved pull request updated after the approval", func(t *testing.T) {
+		comments = []model.Comment{{Author: "bob", Body: "LGTM", CreatedAt: approvedAt.Add(time.Second)}}
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+
+		// Only PR_1: PR_2 is requested again, PR_3 is not approved.
+		gt.A(t, client.CommentCalls).Length(1).Required()
+		gt.A(t, client.CommentCalls[0]).Equal([]model.CommentQuery{{ID: "PR_1", Since: approvedAt}})
+		gt.True(t, entries(t, repo)["PR_1"].Item.ViewerAddressedAt.IsZero())
+		gt.A(t, listed(t)).Equal([]model.ItemID{"PR_2", "PR_3"})
+	})
+
+	t.Run("comments are not read again while updatedAt is unchanged", func(t *testing.T) {
+		clk.Advance(61 * time.Second)
+		client.Reset()
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		gt.A(t, client.CommentCalls).Length(0)
+		gt.A(t, listed(t)).Equal([]model.ItemID{"PR_2", "PR_3"})
+	})
+
+	t.Run("a failed read leaves updatedAt unchanged and is retried", func(t *testing.T) {
+		clk.Advance(61 * time.Second)
+		client.Reset()
+		approved.UpdatedAt = t0.Add(-30 * time.Minute)
+		search.set("reviewed-by:alice", approved, requested, notApproved)
+		mu.Lock()
+		failWith = &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: errors.New("connection reset")}
+		comments = []model.Comment{{Author: "bob", Body: "@alice could you check?", CreatedAt: t0.Add(-30 * time.Minute)}}
+		mu.Unlock()
+
+		_, err := syncer.RunOnce(ctx, true)
+		gt.Error(t, err)
+		gt.Equal(t, entries(t, repo)["PR_1"].Item.UpdatedAt, approvedAt.Add(time.Second))
+
+		mu.Lock()
+		failWith = nil
+		mu.Unlock()
+		clk.Advance(2 * time.Minute)
+		client.Reset()
+		_, err = syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		gt.A(t, client.CommentCalls).Length(1)
+
+		e := entries(t, repo)["PR_1"]
+		gt.Equal(t, e.Item.UpdatedAt, t0.Add(-30*time.Minute))
+		gt.Equal(t, e.Item.ViewerAddressedAt, t0.Add(-30*time.Minute))
+		gt.True(t, e.Unread())
+		gt.A(t, listed(t)).Equal([]model.ItemID{"PR_1", "PR_2", "PR_3"})
+	})
+
+	t.Run("a later read keeps the time found earlier", func(t *testing.T) {
+		clk.Advance(2 * time.Minute)
+		client.Reset()
+		approved.UpdatedAt = t0.Add(-20 * time.Minute)
+		search.set("reviewed-by:alice", approved, requested, notApproved)
+		mu.Lock()
+		comments = nil
+		mu.Unlock()
+
+		_, err := syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		gt.A(t, client.CommentCalls).Length(1)
+		gt.Equal(t, entries(t, repo)["PR_1"].Item.ViewerAddressedAt, t0.Add(-30*time.Minute))
+	})
+
+	t.Run("a new approval hides it again", func(t *testing.T) {
+		clk.Advance(2 * time.Minute)
+		client.Reset()
+		approved.ViewerApprovedAt = t0.Add(-10 * time.Minute)
+		approved.UpdatedAt = t0.Add(-10 * time.Minute)
+		search.set("reviewed-by:alice", approved, requested, notApproved)
+
+		_, err := syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		// updatedAt is not after the new approval: nothing to read.
+		gt.A(t, client.CommentCalls).Length(0)
+		gt.A(t, listed(t)).Equal([]model.ItemID{"PR_2", "PR_3"})
+	})
+}
+
+func TestSyncViewerAddressedCommentsPaging(t *testing.T) {
+	ctx := context.Background()
+	client, repo, _, syncer, search := setup(t)
+	approvedAt := t0.Add(-2 * time.Hour)
+	approved := prItem("PR_1", 1, t0.Add(-time.Hour))
+	approved.ViewerApprovedAt = approvedAt
+	search.set("reviewed-by:alice", approved)
+
+	// The latest timeline page holds no addressed comment; the reply to
+	// alice is on the second page of line comments of a review on the
+	// previous timeline page.
+	mentionAt := approvedAt.Add(10 * time.Minute)
+	client.ListCommentsFunc = func(_ context.Context, queries []model.CommentQuery) (*model.CommentsResult, error) {
+		result := &model.CommentsResult{RateLimit: model.RateLimit{Remaining: -1}}
+		for _, q := range queries {
+			page := model.CommentPage{Query: q, Found: true}
+			switch {
+			case q.ReviewID == "" && q.Before == "":
+				page.Comments = []model.Comment{{Author: "bob", Body: "LGTM", CreatedAt: approvedAt.Add(time.Hour)}}
+				page.Next = []model.CommentQuery{{ID: q.ID, Since: q.Since, Before: "T1"}}
+			case q.ReviewID == "" && q.Before == "T1":
+				page.Comments = []model.Comment{{Author: "carol", Body: "", CreatedAt: approvedAt.Add(20 * time.Minute)}}
+				page.Next = []model.CommentQuery{{ID: q.ID, Since: q.Since, ReviewID: "PRR_1", Before: "C1"}}
+			case q.ReviewID == "PRR_1" && q.Before == "C1":
+				page.Comments = []model.Comment{{Author: "carol", Body: "Done", CreatedAt: mentionAt, ReplyToAuthor: "alice"}}
+			default:
+				t.Errorf("unexpected query %+v", q)
+			}
+			result.Pages = append(result.Pages, page)
+		}
+		return result, nil
+	}
+
+	_, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+	gt.A(t, client.CommentCalls).Length(3)
+	gt.Equal(t, entries(t, repo)["PR_1"].Item.ViewerAddressedAt, mentionAt)
+}
+
+func TestSyncViewerAddressedCommentsNotFound(t *testing.T) {
+	ctx := context.Background()
+	client, repo, clk, syncer, search := setup(t)
+	approved := prItem("PR_1", 1, t0.Add(-time.Hour))
+	approved.ViewerApprovedAt = t0.Add(-2 * time.Hour)
+	search.set("author:alice", issueItem("I_1", 1, t0.Add(-time.Hour)))
+	_, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+
+	// GitHub answers the pull request as null once, then with a mention.
+	found := false
+	client.ListCommentsFunc = func(_ context.Context, queries []model.CommentQuery) (*model.CommentsResult, error) {
+		result := &model.CommentsResult{RateLimit: model.RateLimit{Remaining: -1}}
+		for _, q := range queries {
+			page := model.CommentPage{Query: q, Found: found}
+			if found {
+				page.Comments = []model.Comment{{Author: "bob", Body: "@alice", CreatedAt: t0.Add(-30 * time.Minute)}}
+			}
+			result.Pages = append(result.Pages, page)
+		}
+		return result, nil
+	}
+
+	clk.Advance(61 * time.Second)
+	search.set("reviewed-by:alice", approved)
+	_, err = syncer.RunOnce(ctx, false)
+	gt.Error(t, err)
+	_, saved := entries(t, repo)["PR_1"]
+	gt.False(t, saved)
+
+	found = true
+	clk.Advance(2 * time.Minute)
+	_, err = syncer.RunOnce(ctx, true)
+	gt.NoError(t, err).Required()
+	gt.Equal(t, entries(t, repo)["PR_1"].Item.ViewerAddressedAt, t0.Add(-30*time.Minute))
+}
+
+func TestSyncViewerAddressedCommentsInChunks(t *testing.T) {
+	ctx := context.Background()
+	client, _, _, syncer, search := setup(t)
+	var prs []model.Item
+	for i := 1; i <= 12; i++ {
+		p := prItem(fmt.Sprintf("PR_%02d", i), i, t0.Add(-time.Hour))
+		p.ViewerApprovedAt = t0.Add(-2 * time.Hour)
+		prs = append(prs, p)
+	}
+	search.set("reviewed-by:alice", prs...)
+
+	_, err := syncer.RunOnce(ctx, false)
+	gt.NoError(t, err).Required()
+	gt.A(t, callSizes(client.CommentCalls)).Equal([]int{10, 2})
+}
+
 func TestSyncArchivedAndDeletedRepositories(t *testing.T) {
 	ctx := context.Background()
 	client, repo, clk, syncer, search := setup(t)

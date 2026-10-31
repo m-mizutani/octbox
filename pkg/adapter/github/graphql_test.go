@@ -216,11 +216,12 @@ func TestViewerReviewConversion(t *testing.T) {
 		return strings.Replace(node, `"latestReviews":`,
 			`"viewerLatestReview":`+review+`,"viewerLatestReviewRequest":`+request+`,"latestReviews":`, 1)
 	}
+	approved := `{"state":"APPROVED","submittedAt":"2026-10-01T11:00:00Z"}`
 	nodes := []string{
-		withViewer(prNode("PR_approved", 1, "", ""), `{"state":"APPROVED"}`, `null`),
-		withViewer(prNode("PR_rerequested", 2, "", ""), `{"state":"APPROVED"}`, `{"id":"RR_1"}`),
-		withViewer(prNode("PR_commented", 3, "", ""), `{"state":"COMMENTED"}`, `null`),
-		withViewer(prNode("PR_dismissed", 4, "", ""), `{"state":"DISMISSED"}`, `null`),
+		withViewer(prNode("PR_approved", 1, "", ""), approved, `null`),
+		withViewer(prNode("PR_rerequested", 2, "", ""), approved, `{"id":"RR_1"}`),
+		withViewer(prNode("PR_commented", 3, "", ""), `{"state":"COMMENTED","submittedAt":"2026-10-01T11:00:00Z"}`, `null`),
+		withViewer(prNode("PR_dismissed", 4, "", ""), `{"state":"DISMISSED","submittedAt":"2026-10-01T11:00:00Z"}`, `null`),
 		withViewer(prNode("PR_requested", 5, "", ""), `null`, `{"id":"RR_2"}`),
 		prNode("PR_absent", 6, "", ""),
 		issueNode("I_1", 7, "OPEN"),
@@ -231,24 +232,118 @@ func TestViewerReviewConversion(t *testing.T) {
 	})
 	page, err := client.SearchItems(ctx, "q", "")
 	gt.NoError(t, err).Required()
-	gt.S(t, srv.requests[0].Query).Contains("viewerLatestReview { state }")
+	gt.S(t, srv.requests[0].Query).Contains("viewerLatestReview { state submittedAt }")
 	gt.S(t, srv.requests[0].Query).Contains("viewerLatestReviewRequest { id }")
 	gt.A(t, page.Items).Length(len(nodes)).Required()
 
-	type viewerReview struct{ approved, requested bool }
+	type viewerReview struct {
+		approvedAt time.Time
+		requested  bool
+	}
 	got := map[model.ItemID]viewerReview{}
 	for _, it := range page.Items {
-		got[it.ID] = viewerReview{approved: it.ViewerApproved, requested: it.ViewerReviewRequested}
+		gt.True(t, it.ViewerAddressedAt.IsZero())
+		got[it.ID] = viewerReview{approvedAt: it.ViewerApprovedAt, requested: it.ViewerReviewRequested}
 	}
+	approvedAt := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
 	gt.Equal(t, got, map[model.ItemID]viewerReview{
-		"PR_approved":    {approved: true},
-		"PR_rerequested": {approved: true, requested: true},
+		"PR_approved":    {approvedAt: approvedAt},
+		"PR_rerequested": {approvedAt: approvedAt, requested: true},
 		"PR_commented":   {},
 		"PR_dismissed":   {},
 		"PR_requested":   {requested: true},
 		"PR_absent":      {},
 		"I_1":            {},
 	})
+}
+
+func TestListComments(t *testing.T) {
+	ctx := context.Background()
+	srv, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":{`+rateLimitJSON+`,
+"p0":{"timelineItems":{"pageInfo":{"hasPreviousPage":true,"startCursor":"T1"},"nodes":[
+  {"__typename":"IssueComment","createdAt":"2026-10-01T12:00:00Z","body":"@alice ping","author":{"login":"bob"}},
+  {"__typename":"PullRequestReview","id":"PRR_1","createdAt":"2026-10-01T12:05:00Z","body":"","author":null,"comments":{
+    "pageInfo":{"hasPreviousPage":true,"startCursor":"C1"},"nodes":[
+    {"createdAt":"2026-10-01T12:05:00Z","body":"Fixed.","author":{"login":"bob"},"replyTo":{"author":{"login":"alice"}}},
+    {"createdAt":"2026-10-01T12:06:00Z","body":"nit","author":{"login":"carol"},"replyTo":null}
+  ]}},
+  {"__typename":"PullRequestReview","id":"PRR_2","createdAt":"2026-10-01T12:07:00Z","body":"ok","author":{"login":"carol"},"comments":{
+    "pageInfo":{"hasPreviousPage":false,"startCursor":null},"nodes":[]}}
+]}},
+"p1":null,
+"p2":{"comments":{"pageInfo":{"hasPreviousPage":false,"startCursor":"C9"},"nodes":[
+  {"createdAt":"2026-10-01T11:30:00Z","body":"older","author":{"login":"bob"},"replyTo":{"author":{"login":"alice"}}}
+]}}}}`)
+	})
+	since := time.Date(2026, 10, 1, 11, 0, 0, 0, time.FixedZone("JST", 9*60*60))
+	queries := []model.CommentQuery{
+		{ID: "PR_1", Since: since},
+		{ID: "PR_gone", Since: since},
+		{ID: "PR_3", Since: since, ReviewID: "PRR_9", Before: "C10"},
+	}
+	result, err := client.ListComments(ctx, queries)
+	gt.NoError(t, err).Required()
+
+	gt.A(t, srv.requests).Length(1).Required()
+	req := srv.requests[0]
+	gt.Equal(t, req.Variables["i0"], any("PR_1"))
+	gt.Equal(t, req.Variables["s0"], any("2026-10-01T02:00:00Z"))
+	gt.Nil(t, req.Variables["b0"])
+	gt.Equal(t, req.Variables["i1"], any("PR_gone"))
+	gt.Equal(t, req.Variables["i2"], any("PRR_9"))
+	gt.Equal(t, req.Variables["b2"], any("C10"))
+	_, hasSince := req.Variables["s2"]
+	gt.False(t, hasSince)
+	gt.S(t, req.Query).Contains("p0: node(id: $i0) { ... on PullRequest {")
+	gt.S(t, req.Query).Contains("timelineItems(since: $s1, last: 50, before: $b1, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW])")
+	gt.S(t, req.Query).Contains("p2: node(id: $i2) { ... on PullRequestReview {")
+	gt.S(t, req.Query).Contains("comments(last: 20, before: $b2)")
+
+	gt.Equal(t, result.RateLimit.Remaining, 4321)
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 1, h, m, 0, 0, time.UTC) }
+	gt.Equal(t, result.Pages, []model.CommentPage{
+		{
+			Query: queries[0],
+			Found: true,
+			Comments: []model.Comment{
+				{Author: "bob", Body: "@alice ping", CreatedAt: at(12, 0)},
+				{Author: "ghost", Body: "", CreatedAt: at(12, 5)},
+				{Author: "bob", Body: "Fixed.", CreatedAt: at(12, 5), ReplyToAuthor: "alice"},
+				{Author: "carol", Body: "nit", CreatedAt: at(12, 6)},
+				{Author: "carol", Body: "ok", CreatedAt: at(12, 7)},
+			},
+			Next: []model.CommentQuery{
+				{ID: "PR_1", Since: since, ReviewID: "PRR_1", Before: "C1"},
+				{ID: "PR_1", Since: since, Before: "T1"},
+			},
+		},
+		{Query: queries[1]},
+		{
+			Query:    queries[2],
+			Found:    true,
+			Comments: []model.Comment{{Author: "bob", Body: "older", CreatedAt: at(11, 30), ReplyToAuthor: "alice"}},
+		},
+	})
+}
+
+func TestListCommentsLimits(t *testing.T) {
+	ctx := context.Background()
+	srv, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":{}}`)
+	})
+
+	result, err := client.ListComments(ctx, nil)
+	gt.NoError(t, err).Required()
+	gt.A(t, result.Pages).Length(0)
+
+	queries := make([]model.CommentQuery, 11)
+	for i := range queries {
+		queries[i] = model.CommentQuery{ID: model.ItemID(fmt.Sprintf("PR_%d", i)), Since: time.Now()}
+	}
+	_, err = client.ListComments(ctx, queries)
+	gt.Error(t, err)
+	gt.A(t, srv.requests).Length(0)
 }
 
 func TestClosedAndMergedStates(t *testing.T) {

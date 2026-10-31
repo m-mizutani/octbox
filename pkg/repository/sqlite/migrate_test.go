@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/m-mizutani/gt"
 
@@ -88,7 +89,8 @@ func TestNewMigratesVersion1(t *testing.T) {
 	// The added columns are written by the next save.
 	e, err := repo.GetEntry(ctx, "PR_1")
 	gt.NoError(t, err).Required()
-	e.Item.ViewerApproved = true
+	e.Item.ViewerApprovedAt = e.Item.UpdatedAt.Add(-time.Hour)
+	e.Item.ViewerAddressedAt = e.Item.UpdatedAt
 	gt.NoError(t, repo.SaveItems(ctx, []model.Item{e.Item})).Required()
 	saved, err := repo.GetEntry(ctx, "PR_1")
 	gt.NoError(t, err).Required()
@@ -130,13 +132,14 @@ func assertMigratedVersion1(t *testing.T, repo *sqlite.Repository) {
 	t.Helper()
 	ctx := context.Background()
 
-	// Rows of version 1 are kept, with the viewer's review unknown (false)
+	// Rows of version 1 are kept, with the viewer's review unknown (zero)
 	// until the next refresh.
 	e, err := repo.GetEntry(ctx, "PR_1")
 	gt.NoError(t, err).Required()
 	gt.Equal(t, e.Item.Title, "Add retry")
-	gt.False(t, e.Item.ViewerApproved)
+	gt.True(t, e.Item.ViewerApprovedAt.IsZero())
 	gt.False(t, e.Item.ViewerReviewRequested)
+	gt.True(t, e.Item.ViewerAddressedAt.IsZero())
 	gt.A(t, e.Categories).Equal([]model.Category{model.CategoryReview})
 	gt.Equal(t, e.ReadUpdatedAt.UnixMilli(), int64(1790000000000))
 

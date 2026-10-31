@@ -36,6 +36,11 @@ type ItemsResult struct {
 	RateLimit  RateLimit
 }
 
+type CommentsResult struct {
+	Pages     []CommentPage // one per query, in the order asked
+	RateLimit RateLimit
+}
+
 type NotificationThread struct {
 	Ref       ItemRef
 	UpdatedAt time.Time

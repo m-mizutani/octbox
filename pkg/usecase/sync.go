@@ -31,6 +31,11 @@ const (
 	maxSearchPages            = 20 // 50 items per page; GitHub search returns at most 1,000
 	resolveChunk              = 50
 	nodesChunk                = 50
+	commentsChunk             = 10
+	// maxCommentRounds bounds the pages of comments read for one store: 20
+	// rounds read 1,000 comments and reviews since the approval of one pull
+	// request.
+	maxCommentRounds = 20
 	// requestConcurrency is how many GraphQL requests one sync has in flight.
 	// Five concurrent requests took as long each as serial ones, and stay far
 	// below GitHub's limit of 100 concurrent requests.
@@ -512,6 +517,12 @@ func (x *Syncer) store(ctx context.Context, run *syncRun, items []model.Item) ([
 			removed = append(removed, item.ID)
 		}
 	}
+	if err := x.setViewerAddressedAt(ctx, run, open); err != nil {
+		return nil, err
+	}
+	if err := x.checkpoint(ctx, run); err != nil {
+		return nil, err
+	}
 	if err := x.repo.SaveItems(ctx, open); err != nil {
 		return nil, storageErr(err, "failed to save items", goerr.V("count", len(open)))
 	}
@@ -523,6 +534,96 @@ func (x *Syncer) store(ctx context.Context, run *syncRun, items []model.Item) ([
 		delete(run.deleted, item.ID)
 	}
 	return open, nil
+}
+
+// setViewerAddressedAt sets ViewerAddressedAt of each item: the stored value,
+// or, for a pull request the viewer approved and that was updated after the
+// approval, the time found in its comments when its updatedAt or approval
+// differs from the stored one. The comments are read before the item is
+// saved, so a failure leaves the stored updatedAt unchanged and the next
+// sync, which fetches the item again, reads them again.
+func (x *Syncer) setViewerAddressedAt(ctx context.Context, run *syncRun, items []model.Item) error {
+	refs := make([]model.ItemRef, len(items))
+	for i := range items {
+		refs[i] = items[i].Ref()
+	}
+	stored, err := x.repo.FindItemsByRefs(ctx, refs)
+	if err != nil {
+		return storageErr(err, "failed to find stored items", goerr.V("count", len(refs)))
+	}
+
+	var queries []model.CommentQuery
+	index := map[model.ItemID]int{}
+	comments := map[model.ItemID][]model.Comment{}
+	for i := range items {
+		item := &items[i]
+		prev, ok := stored[item.Ref()]
+		known := ok && prev.ID == item.ID
+		if known {
+			item.ViewerAddressedAt = prev.ViewerAddressedAt
+		}
+		if item.ViewerApprovedAt.IsZero() || item.ViewerReviewRequested || !item.UpdatedAt.After(item.ViewerApprovedAt) {
+			continue
+		}
+		if known && prev.UpdatedAt.Equal(item.UpdatedAt) && prev.ViewerApprovedAt.Equal(item.ViewerApprovedAt) {
+			continue
+		}
+		index[item.ID] = i
+		queries = append(queries, model.CommentQuery{ID: item.ID, Since: item.ViewerApprovedAt})
+	}
+
+	// Every page is read: an addressed comment may be older than the latest
+	// page, and the item is saved with its new updatedAt only after its
+	// comments are read. The pages of one round are requested concurrently;
+	// the next round asks for the older pages they listed.
+	for round := 1; len(queries) > 0; round++ {
+		if round > maxCommentRounds {
+			// Failing would stop every sync for as long as the pull request
+			// has this many comments; the latest pages decide instead.
+			logging.From(ctx).Warn("stopped reading comments: too many pages",
+				"rounds", maxCommentRounds, "pending", len(queries))
+			break
+		}
+		chunks := chunk(queries, commentsChunk)
+		results, err := async.Map(ctx, len(chunks), requestConcurrency,
+			func(ctx context.Context, i int) (*model.CommentsResult, error) {
+				var result *model.CommentsResult
+				err := x.request(ctx, run, func() error {
+					var err error
+					result, err = x.client.ListComments(ctx, chunks[i])
+					return err
+				})
+				if err != nil {
+					return nil, goerr.Wrap(err, "failed to list comments", goerr.V("count", len(chunks[i])))
+				}
+				return result, nil
+			})
+		if err != nil {
+			return err
+		}
+
+		queries = nil
+		for _, result := range results {
+			run.observeRate(result.RateLimit)
+			for _, page := range result.Pages {
+				if !page.Found {
+					// A pull request returned as null cannot be judged; the
+					// sync fails so that it is fetched and read again.
+					return goerr.New("GitHub returned no comments for a pull request",
+						goerr.V("item_id", page.Query.ID), goerr.V("review_id", page.Query.ReviewID))
+				}
+				comments[page.Query.ID] = append(comments[page.Query.ID], page.Comments...)
+				queries = append(queries, page.Next...)
+			}
+		}
+	}
+
+	for id, i := range index {
+		item := &items[i]
+		found := model.LatestAddressedAt(run.state.Viewer, item.ViewerApprovedAt, comments[id])
+		item.ViewerAddressedAt = laterOf(item.ViewerAddressedAt, found)
+	}
+	return nil
 }
 
 func (x *Syncer) deleteItems(ctx context.Context, run *syncRun, ids []model.ItemID) error {

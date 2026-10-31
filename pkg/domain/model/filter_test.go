@@ -57,7 +57,7 @@ func TestFilterMatch(t *testing.T) {
 
 	t.Run("pull request approved by the viewer never matches", func(t *testing.T) {
 		approved := pr
-		approved.ViewerApproved = true
+		approved.ViewerApprovedAt = approved.UpdatedAt
 		gt.False(t, model.NewFilter("").Match(entry(approved, model.CategoryReview)))
 		gt.False(t, model.NewFilter("retry").Match(entry(approved, model.CategoryReview, model.CategoryAssigned)))
 

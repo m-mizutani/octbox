@@ -161,11 +161,12 @@ func TestUpdateDetector(t *testing.T) {
 
 		// Approving updates the pull request on GitHub.
 		approved := prItem("PR_1", 1, t0.Add(time.Minute))
-		approved.ViewerApproved = true
+		approved.ViewerApprovedAt = t0.Add(time.Minute)
 		saveUnread(t, repo, approved)
 		gt.NoError(t, detector.Check(ctx)).Required()
 
-		// A comment by the author after the approval.
+		// A comment by the author after the approval, not addressed to the
+		// viewer.
 		approved.UpdatedAt = t0.Add(2 * time.Minute)
 		saveUnread(t, repo, approved)
 		gt.NoError(t, detector.Check(ctx)).Required()
@@ -179,15 +180,30 @@ func TestUpdateDetector(t *testing.T) {
 		gt.Equal(t, indicator.CallCount("show_update"), 1)
 	})
 
+	t.Run("an item approved by the viewer is shown when a comment is addressed to the viewer", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		approved := prItem("PR_1", 1, t0)
+		approved.ViewerApprovedAt = t0
+		saveRead(t, repo, approved)
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		addressed := approved
+		addressed.UpdatedAt = t0.Add(time.Minute)
+		addressed.ViewerAddressedAt = t0.Add(time.Minute)
+		saveUnread(t, repo, addressed)
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 1)
+	})
+
 	t.Run("an unread item shown again with the same updatedAt counts as new", func(t *testing.T) {
 		repo, indicator, detector := setup(t)
 		approved := prItem("PR_1", 1, t0)
-		approved.ViewerApproved = true
+		approved.ViewerApprovedAt = t0
 		saveUnread(t, repo, approved)
 		gt.NoError(t, detector.Start(ctx)).Required()
 
 		dismissed := approved
-		dismissed.ViewerApproved = false
+		dismissed.ViewerApprovedAt = time.Time{}
 		saveUnread(t, repo, dismissed)
 		gt.NoError(t, detector.Check(ctx)).Required()
 		gt.Equal(t, indicator.CallCount("show_update"), 1)

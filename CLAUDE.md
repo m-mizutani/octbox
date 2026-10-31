@@ -72,6 +72,13 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   each GitHub request and each write (`RenewSync`), and saves its final state
   only while it still holds the lease (`ReleaseSync`); one HTTP request is
   limited to 30 seconds so a renewal is always due before the lease expires.
+- A pull request the viewer approved, with no review requested from the
+  viewer again, is hidden until a comment addressed to the viewer (a
+  mention or a reply to the viewer's line comment) is written after the
+  approval (`Item.ViewerReviewDone`). When its updatedAt or approval differs
+  from the stored one, its comments since the approval are read before it is
+  saved (`Syncer.setViewerAddressedAt`), page by page, at most 20 rounds. A
+  failure saves nothing, so the next sync fetches it and reads them again.
 - The first sync of a database marks every stored item read. A first sync
   that fails resets its cursors, so the next one is a first sync again.
 
