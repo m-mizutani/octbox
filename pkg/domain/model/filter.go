@@ -15,10 +15,11 @@ func NewFilter(keyword string) Filter {
 	return Filter{Terms: strings.Fields(strings.ToLower(keyword))}
 }
 
-// Match reports whether e belongs to at least one category and its text
-// contains every term.
+// Match reports whether e belongs to at least one category, the viewer's
+// review of it is not done (Item.ViewerReviewDone), and its text contains
+// every term.
 func (x Filter) Match(e *Entry) bool {
-	if len(e.Categories) == 0 {
+	if len(e.Categories) == 0 || e.Item.ViewerReviewDone() {
 		return false
 	}
 	if len(x.Terms) == 0 {

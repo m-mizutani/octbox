@@ -69,6 +69,8 @@ func TestItemValidate(t *testing.T) {
 		"draft issue":       func(x *model.Item) { x.IsDraft = true },
 		"issue with ci":     func(x *model.Item) { x.CI = model.CIStateSuccess },
 		"issue with review": func(x *model.Item) { x.Review = model.ReviewStateApproved },
+		"issue approved":    func(x *model.Item) { x.ViewerApproved = true },
+		"issue requested":   func(x *model.Item) { x.ViewerReviewRequested = true },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -87,6 +89,27 @@ func TestEntryUnread(t *testing.T) {
 	gt.True(t, (&model.Entry{Item: item}).Unread())
 	gt.False(t, (&model.Entry{Item: item, ReadUpdatedAt: updated}).Unread())
 	gt.True(t, (&model.Entry{Item: item, ReadUpdatedAt: updated.Add(-time.Second)}).Unread())
+}
+
+func TestItemViewerReviewDone(t *testing.T) {
+	cases := []struct {
+		name                string
+		approved, requested bool
+		done                bool
+	}{
+		{name: "approved", approved: true, done: true},
+		{name: "approved and requested again", approved: true, requested: true, done: false},
+		{name: "requested only", requested: true, done: false},
+		{name: "not reviewed", done: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			item := validPR()
+			item.ViewerApproved = c.approved
+			item.ViewerReviewRequested = c.requested
+			gt.Equal(t, item.ViewerReviewDone(), c.done)
+		})
+	}
 }
 
 func TestRepoNameString(t *testing.T) {

@@ -38,6 +38,8 @@ fragment ItemFields on Node {
     author { login }
     repository { owner { login } name isArchived }
     latestReviews(first: 10) { nodes { state } }
+    viewerLatestReview { state }
+    viewerLatestReviewRequest { id }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }
 }`
@@ -96,6 +98,12 @@ type itemNode struct {
 			State string `json:"state"`
 		} `json:"nodes"`
 	} `json:"latestReviews"`
+	ViewerLatestReview *struct {
+		State string `json:"state"`
+	} `json:"viewerLatestReview"`
+	ViewerLatestReviewRequest *struct {
+		ID string `json:"id"`
+	} `json:"viewerLatestReviewRequest"`
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
@@ -152,6 +160,8 @@ func (x *itemNode) toModel() (model.Item, bool, error) {
 		item.IsDraft = x.IsDraft
 		item.CI = x.ciState()
 		item.Review = x.reviewState()
+		item.ViewerApproved = x.ViewerLatestReview != nil && x.ViewerLatestReview.State == "APPROVED"
+		item.ViewerReviewRequested = x.ViewerLatestReviewRequest != nil
 	}
 
 	if err := item.Validate(); err != nil {

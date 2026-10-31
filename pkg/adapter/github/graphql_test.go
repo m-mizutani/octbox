@@ -210,6 +210,47 @@ func TestCIAndReviewConversion(t *testing.T) {
 	gt.Equal(t, got["PR_s"].Review, model.ReviewStateNone)
 }
 
+func TestViewerReviewConversion(t *testing.T) {
+	ctx := context.Background()
+	withViewer := func(node, review, request string) string {
+		return strings.Replace(node, `"latestReviews":`,
+			`"viewerLatestReview":`+review+`,"viewerLatestReviewRequest":`+request+`,"latestReviews":`, 1)
+	}
+	nodes := []string{
+		withViewer(prNode("PR_approved", 1, "", ""), `{"state":"APPROVED"}`, `null`),
+		withViewer(prNode("PR_rerequested", 2, "", ""), `{"state":"APPROVED"}`, `{"id":"RR_1"}`),
+		withViewer(prNode("PR_commented", 3, "", ""), `{"state":"COMMENTED"}`, `null`),
+		withViewer(prNode("PR_dismissed", 4, "", ""), `{"state":"DISMISSED"}`, `null`),
+		withViewer(prNode("PR_requested", 5, "", ""), `null`, `{"id":"RR_2"}`),
+		prNode("PR_absent", 6, "", ""),
+		issueNode("I_1", 7, "OPEN"),
+	}
+	srv, client := newGraphQLServer(t, func(w http.ResponseWriter, _ graphqlRequest) {
+		writeJSON(w, `{"data":{`+rateLimitJSON+`,"search":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[`+
+			strings.Join(nodes, ",")+`]}}}`)
+	})
+	page, err := client.SearchItems(ctx, "q", "")
+	gt.NoError(t, err).Required()
+	gt.S(t, srv.requests[0].Query).Contains("viewerLatestReview { state }")
+	gt.S(t, srv.requests[0].Query).Contains("viewerLatestReviewRequest { id }")
+	gt.A(t, page.Items).Length(len(nodes)).Required()
+
+	type viewerReview struct{ approved, requested bool }
+	got := map[model.ItemID]viewerReview{}
+	for _, it := range page.Items {
+		got[it.ID] = viewerReview{approved: it.ViewerApproved, requested: it.ViewerReviewRequested}
+	}
+	gt.Equal(t, got, map[model.ItemID]viewerReview{
+		"PR_approved":    {approved: true},
+		"PR_rerequested": {approved: true, requested: true},
+		"PR_commented":   {},
+		"PR_dismissed":   {},
+		"PR_requested":   {requested: true},
+		"PR_absent":      {},
+		"I_1":            {},
+	})
+}
+
 func TestClosedAndMergedStates(t *testing.T) {
 	ctx := context.Background()
 	merged := strings.Replace(prNode("PR_m", 1, "", ""), `"state":"OPEN"`, `"state":"MERGED"`, 1)

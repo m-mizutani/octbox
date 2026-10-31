@@ -83,6 +83,15 @@ type Item struct {
 	CI        CIState     // CIStateNone for issues
 	Review    ReviewState // ReviewStateNone for issues
 	UpdatedAt time.Time   // GitHub updatedAt, UTC
+	// ViewerApproved is true when the latest review the viewer submitted on
+	// the pull request is an approval. A dismissed approval, or a later
+	// comment or change request, makes it false. false for issues.
+	ViewerApproved bool
+	// ViewerReviewRequested is true while a review of the pull request is
+	// requested from the viewer. GitHub removes the request when the viewer
+	// submits a review, and adds it again when the author re-requests one.
+	// false for issues.
+	ViewerReviewRequested bool
 	// RepoArchived is true when the repository is archived. Such items are
 	// deleted like closed ones, so it is never stored.
 	RepoArchived bool
@@ -148,9 +157,20 @@ func (x *Item) Validate() error {
 			return invalid("ci")
 		case x.Review != ReviewStateNone:
 			return invalid("review")
+		case x.ViewerApproved:
+			return invalid("viewer_approved")
+		case x.ViewerReviewRequested:
+			return invalid("viewer_review_requested")
 		}
 	}
 	return nil
+}
+
+// ViewerReviewDone reports whether the viewer has approved the pull request
+// and no review is requested from the viewer again. The inbox, the unread
+// count, and the update indicator leave such items out.
+func (x *Item) ViewerReviewDone() bool {
+	return x.ViewerApproved && !x.ViewerReviewRequested
 }
 
 type ItemRef struct {

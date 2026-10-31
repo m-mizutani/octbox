@@ -108,16 +108,18 @@ func (x *Repository) SaveItems(ctx context.Context, items []model.Item) error {
 				return goerr.Wrap(err, "failed to delete the old row", goerr.V("item_id", item.ID))
 			}
 			if _, err := tx.ExecContext(ctx, `
-INSERT INTO items (id, kind, repo_owner, repo_name, number, title, url, author, is_draft, ci_state, review_state, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO items (id, kind, repo_owner, repo_name, number, title, url, author, is_draft, ci_state, review_state,
+    viewer_approved, viewer_review_requested, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     kind = excluded.kind, repo_owner = excluded.repo_owner, repo_name = excluded.repo_name,
     number = excluded.number, title = excluded.title, url = excluded.url, author = excluded.author,
     is_draft = excluded.is_draft, ci_state = excluded.ci_state, review_state = excluded.review_state,
+    viewer_approved = excluded.viewer_approved, viewer_review_requested = excluded.viewer_review_requested,
     updated_at = excluded.updated_at`,
 				string(item.ID), string(item.Kind), item.Repo.Owner, item.Repo.Name, item.Number,
 				item.Title, item.URL, item.Author, item.IsDraft, string(item.CI), string(item.Review),
-				item.UpdatedAt.UnixMilli()); err != nil {
+				item.ViewerApproved, item.ViewerReviewRequested, item.UpdatedAt.UnixMilli()); err != nil {
 				return goerr.Wrap(err, "failed to save an item", goerr.V("item_id", item.ID))
 			}
 		}
@@ -206,7 +208,8 @@ func (x *Repository) ReplaceCategory(ctx context.Context, category model.Categor
 
 const selectEntry = `
 SELECT i.id, i.kind, i.repo_owner, i.repo_name, i.number, i.title, i.url, i.author,
-       i.is_draft, i.ci_state, i.review_state, i.updated_at, r.read_updated_at
+       i.is_draft, i.ci_state, i.review_state, i.viewer_approved, i.viewer_review_requested,
+       i.updated_at, r.read_updated_at
 FROM items i LEFT JOIN read_marks r ON r.item_id = i.id`
 
 type scanner interface {
@@ -222,7 +225,7 @@ func scanEntry(s scanner) (*model.Entry, error) {
 	)
 	if err := s.Scan(&id, &kind, &e.Item.Repo.Owner, &e.Item.Repo.Name, &e.Item.Number,
 		&e.Item.Title, &e.Item.URL, &e.Item.Author, &e.Item.IsDraft, &ci, &review,
-		&updatedAt, &readUpdatedAt); err != nil {
+		&e.Item.ViewerApproved, &e.Item.ViewerReviewRequested, &updatedAt, &readUpdatedAt); err != nil {
 		return nil, err
 	}
 	e.Item.ID = model.ItemID(id)

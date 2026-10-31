@@ -81,6 +81,31 @@ func TestSaveItems(t *testing.T) {
 		gt.True(t, e.Unread())
 	})
 
+	t.Run("viewer review fields are saved and overwritten", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		item := pr("PR_1", 1, baseTime)
+		item.ViewerApproved = true
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
+		e, err := repo.GetEntry(ctx, "PR_1")
+		gt.NoError(t, err).Required()
+		gt.Equal(t, e.Item, item)
+
+		item.ViewerReviewRequested = true
+		item.UpdatedAt = baseTime.Add(time.Minute)
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
+		entries, err := repo.ListEntries(ctx)
+		gt.NoError(t, err).Required()
+		gt.A(t, entries).Length(1).Required()
+		gt.Equal(t, entries[0].Item, item)
+
+		item.ViewerApproved = false
+		item.ViewerReviewRequested = false
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{item})).Required()
+		found, err := repo.FindItemsByRefs(ctx, []model.ItemRef{item.Ref()})
+		gt.NoError(t, err).Required()
+		gt.Equal(t, *found[item.Ref()], item)
+	})
+
 	t.Run("new ID for the same repository and number replaces the old row", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_old", 7, baseTime)})).Required()

@@ -12,6 +12,8 @@ An item is listed when it is open and at least one of the following applies:
 
 Closed and merged items, and items of archived or deleted repositories, are removed from the list.
 
+A pull request whose latest review by you is an approval is hidden from the list, the unread count, and the herdr status until a review is requested from you again. It is listed again when the author re-requests your review, when your approval is dismissed, or when you submit a later review that is not an approval (a comment or a change request). New commits and comments alone do not list it again. After upgrading from an earlier version, pull requests you have already approved stay listed until octbox fetches every listed item again (every 10 minutes with the default interval); press `r` to fetch them now.
+
 ## Requirements
 
 - macOS or Linux
