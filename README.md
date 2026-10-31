@@ -65,6 +65,12 @@ The filter matches the title, the repository, the number (`#482`), the author (`
 
 From the left: `●` unread, `P` pull request or `I` issue (gray for a draft), the CI status (`✓` passed, `✗` failed, `●` running), the review status (`approved`, `changes` requested, `review` required), the repository and number, the title, the author, and the time since the last update. An unread row has a bold title; a read row shows its repository, title, author, and time in gray, while the type, CI, and review statuses keep their colors.
 
+### Running in herdr
+
+When octbox runs in a pane of [Herdr TUI](https://herdr.dev/tui/), it appears in the herdr sidebar as the agent `octbox`. When a sync brings a new update to an item (the item is unread and its update time differs from what octbox saw at the previous sync) while you are not viewing that pane, its status turns to done (a filled dot); viewing the pane turns it back to idle. The status does not change for items that are already unread when octbox starts, for items you mark unread with `m`, or for items fetched again without a new update, such as pull requests whose CI is still running.
+
+octbox detects herdr from the variables herdr sets in its panes (`HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`) and needs no setup; outside herdr it sends nothing. Each report to herdr's socket contains the pane ID, the name `octbox`, and the state; GitHub tokens and item contents are never sent. When octbox quits, it removes itself from the sidebar. herdr may play a sound when the status turns to done, as set by `[ui.sound]` in herdr's configuration.
+
 ## Options
 
 | Flag | Environment variable | Default | Description |

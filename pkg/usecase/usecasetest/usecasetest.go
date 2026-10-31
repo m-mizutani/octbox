@@ -204,3 +204,47 @@ func (x *Browser) Open(_ context.Context, url string) error {
 	x.Opened = append(x.Opened, url)
 	return x.Err
 }
+
+// UpdateIndicator records the calls as "register", "show_update" and
+// "unregister", and returns the matching *Err.
+type UpdateIndicator struct {
+	mu            sync.Mutex
+	Calls         []string
+	RegisterErr   error
+	ShowUpdateErr error
+	UnregisterErr error
+}
+
+var _ interfaces.UpdateIndicator = (*UpdateIndicator)(nil)
+
+func (x *UpdateIndicator) record(call string, err error) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.Calls = append(x.Calls, call)
+	return err
+}
+
+func (x *UpdateIndicator) Register(context.Context) error {
+	return x.record("register", x.RegisterErr)
+}
+
+func (x *UpdateIndicator) ShowUpdate(context.Context) error {
+	return x.record("show_update", x.ShowUpdateErr)
+}
+
+func (x *UpdateIndicator) Unregister(context.Context) error {
+	return x.record("unregister", x.UnregisterErr)
+}
+
+// CallCount returns how many times call was recorded.
+func (x *UpdateIndicator) CallCount(call string) int {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	n := 0
+	for _, c := range x.Calls {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}

@@ -31,9 +31,17 @@ func RunForTest(ctx context.Context, args []string, td TestDeps) error {
 		},
 		newClient:  func(model.GitHubToken) interfaces.GitHubClient { return td.Client },
 		newBrowser: func() interfaces.Browser { return td.Browser },
+		// startInbox is replaced, so the inbox never asks for an indicator.
+		updateIndicator: func() interfaces.UpdateIndicator { return nil },
 		startInbox: func(ctx context.Context, _ *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration) error {
 			return td.StartInbox(ctx, token, repo, interval)
 		},
 	}
 	return run(ctx, args, "test", d)
+}
+
+// HerdrIndicator reports whether the environment given by lookup enables the
+// herdr integration.
+func HerdrIndicator(lookup func(string) (string, bool)) bool {
+	return herdrIndicator(lookup) != nil
 }
