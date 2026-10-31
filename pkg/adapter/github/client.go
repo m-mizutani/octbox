@@ -77,7 +77,10 @@ func (c *Client) newRequest(ctx context.Context, method, url string, body io.Rea
 // do sends req and converts an error status into a domain error. The caller
 // closes the body of the returned response.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
+	started := c.now()
 	resp, err := c.httpClient.Do(req)
+	logging.From(req.Context()).Debug("called GitHub", "method", req.Method, "path", req.URL.Path,
+		"status", statusOf(resp), "duration", c.now().Sub(started))
 	if err != nil {
 		return nil, goerr.Wrap(err, "failed to call GitHub", goerr.V("url", req.URL.String()))
 	}
@@ -97,6 +100,14 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	return nil, goerr.Wrap(&interfaces.APIError{StatusCode: resp.StatusCode}, "GitHub API error", values...)
+}
+
+// statusOf returns the status code of resp, or 0 when no response arrived.
+func statusOf(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }
 
 // rateLimitWait reads Retry-After (secondary rate limit) or, when the primary

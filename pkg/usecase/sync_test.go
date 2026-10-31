@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +131,28 @@ func setup(t *testing.T) (*usecasetest.GitHubClient, *sqlite.Repository, *clock,
 	return client, repo, clk, syncer, search
 }
 
+// searchQueries returns the queries of the search calls in sorted order: the
+// searches run concurrently, so their call order is not fixed.
+func searchQueries(client *usecasetest.GitHubClient) []string {
+	queries := make([]string, 0, len(client.SearchCalls))
+	for _, c := range client.SearchCalls {
+		queries = append(queries, c.Query)
+	}
+	sort.Strings(queries)
+	return queries
+}
+
+// callSizes returns the number of elements of each call, largest first:
+// chunks are requested concurrently, so their call order is not fixed.
+func callSizes[T any](calls [][]T) []int {
+	sizes := make([]int, 0, len(calls))
+	for _, c := range calls {
+		sizes = append(sizes, len(c))
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(sizes)))
+	return sizes
+}
+
 func TestSyncFirst(t *testing.T) {
 	ctx := context.Background()
 	client, repo, _, syncer, search := setup(t)
@@ -142,12 +165,13 @@ func TestSyncFirst(t *testing.T) {
 	gt.True(t, report.Full)
 	gt.Equal(t, report.Saved, 3)
 
-	gt.A(t, client.SearchCalls).Length(5).Required()
-	gt.Equal(t, client.SearchCalls[0].Query, "is:pr review-requested:alice archived:false is:open sort:updated-desc")
-	gt.Equal(t, client.SearchCalls[1].Query, "is:pr reviewed-by:alice archived:false is:open sort:updated-desc")
-	gt.Equal(t, client.SearchCalls[2].Query, "author:alice archived:false is:open sort:updated-desc")
-	gt.Equal(t, client.SearchCalls[3].Query, "commenter:alice archived:false is:open sort:updated-desc")
-	gt.Equal(t, client.SearchCalls[4].Query, "assignee:alice archived:false is:open sort:updated-desc")
+	gt.A(t, searchQueries(client)).Equal([]string{
+		"assignee:alice archived:false is:open sort:updated-desc",
+		"author:alice archived:false is:open sort:updated-desc",
+		"commenter:alice archived:false is:open sort:updated-desc",
+		"is:pr review-requested:alice archived:false is:open sort:updated-desc",
+		"is:pr reviewed-by:alice archived:false is:open sort:updated-desc",
+	})
 	for _, c := range client.SearchCalls {
 		gt.S(t, c.Query).NotContains("updated:")
 	}
@@ -257,15 +281,15 @@ func TestSyncNotifications(t *testing.T) {
 		_, err := syncer.RunOnce(ctx, false)
 		gt.NoError(t, err).Required()
 
-		gt.A(t, client.ResolveCalls).Length(2).Required()
-		gt.A(t, client.ResolveCalls[0]).Length(50)
-		gt.A(t, client.ResolveCalls[1]).Length(10)
-		gt.Equal(t, client.ResolveCalls[0][0], stale.Ref())
+		gt.A(t, callSizes(client.ResolveCalls)).Equal([]int{50, 10})
+		var resolved []model.ItemRef
 		for _, call := range client.ResolveCalls {
 			for _, ref := range call {
 				gt.NotEqual(t, ref, local.Ref())
+				resolved = append(resolved, ref)
 			}
 		}
+		gt.A(t, resolved).Has(stale.Ref())
 
 		got := entries(t, repo)
 		gt.M(t, got).Length(61)
@@ -354,10 +378,7 @@ func TestSyncRefresh(t *testing.T) {
 
 		_, err := syncer.RunOnce(ctx, false)
 		gt.NoError(t, err).Required()
-		gt.A(t, client.GetItemsCalls).Length(3).Required()
-		gt.A(t, client.GetItemsCalls[0]).Length(50)
-		gt.A(t, client.GetItemsCalls[1]).Length(50)
-		gt.A(t, client.GetItemsCalls[2]).Length(49)
+		gt.A(t, callSizes(client.GetItemsCalls)).Equal([]int{50, 50, 49})
 
 		st, err := repo.GetSyncState(ctx)
 		gt.NoError(t, err).Required()
@@ -559,6 +580,76 @@ func TestSyncClosedAndMerged(t *testing.T) {
 	})
 }
 
+func TestSyncSendsRequestsConcurrently(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the five searches", func(t *testing.T) {
+		client, _, _, syncer, search := setup(t)
+		// Every search waits until all five are in flight; a serial sync would
+		// never get past the first one.
+		var arrived sync.WaitGroup
+		arrived.Add(len("12345"))
+		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
+			arrived.Done()
+			arrived.Wait()
+			return search.fn(ctx, query, after)
+		}
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+		gt.A(t, client.SearchCalls).Length(5)
+	})
+
+	t.Run("at most five refresh requests", func(t *testing.T) {
+		client, repo, clk, syncer, search := setup(t)
+		var prs []model.Item
+		for i := 1; i <= 350; i++ {
+			prs = append(prs, prItem(fmt.Sprintf("PR_%03d", i), i, t0.Add(-time.Hour)))
+		}
+		search.set("author:alice", prs...)
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+
+		var (
+			mu            sync.Mutex
+			running, peak int
+			release       = make(chan struct{})
+			releaseOnce   sync.Once
+		)
+		client.GetItemsFunc = func(_ context.Context, ids []model.ItemID) (*model.ItemsResult, error) {
+			mu.Lock()
+			running++
+			peak = max(peak, running)
+			// running reaches 5 again when the sixth chunk starts before the
+			// released ones have returned.
+			if running == 5 {
+				releaseOnce.Do(func() { close(release) })
+			}
+			mu.Unlock()
+			<-release
+			mu.Lock()
+			running--
+			mu.Unlock()
+			var items []model.Item
+			for _, p := range prs {
+				for _, id := range ids {
+					if p.ID == id {
+						items = append(items, p)
+					}
+				}
+			}
+			return &model.ItemsResult{Items: items, RateLimit: model.RateLimit{Remaining: -1}}, nil
+		}
+		clk.Advance(61 * time.Second)
+		client.Reset()
+		search.set("author:alice")
+		_, err = syncer.RunOnce(ctx, true)
+		gt.NoError(t, err).Required()
+		gt.A(t, callSizes(client.GetItemsCalls)).Equal([]int{50, 50, 50, 50, 50, 50, 50})
+		gt.Equal(t, peak, 5)
+		gt.M(t, entries(t, repo)).Length(350)
+	})
+}
+
 func TestSyncPaging(t *testing.T) {
 	ctx := context.Background()
 	client, _, _, syncer, _ := setup(t)
@@ -586,10 +677,10 @@ func TestSyncPaging(t *testing.T) {
 			reviewCalls = append(reviewCalls, c)
 		}
 	}
-	gt.A(t, reviewCalls).Length(40).Required()
+	gt.A(t, reviewCalls).Length(20).Required()
 	gt.Equal(t, reviewCalls[0].After, "")
 	gt.Equal(t, reviewCalls[1].After, "c1")
-	gt.Equal(t, reviewCalls[39].After, "c39")
+	gt.Equal(t, reviewCalls[19].After, "c19")
 }
 
 func TestSyncRetriesGatewayErrors(t *testing.T) {
@@ -605,7 +696,8 @@ func TestSyncRetriesGatewayErrors(t *testing.T) {
 			}))
 		failures := 2
 		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
-			if failures > 0 {
+			// Only one search fails: the searches run concurrently.
+			if strings.Contains(query, "review-requested:") && failures > 0 {
 				failures--
 				return nil, &interfaces.APIError{StatusCode: 502}
 			}
@@ -631,7 +723,13 @@ func TestSyncRetriesGatewayErrors(t *testing.T) {
 		_, err := syncer.RunOnce(ctx, false)
 		gt.Error(t, err)
 		gt.A(t, slept).Length(0)
-		gt.A(t, client.SearchCalls).Length(1)
+		// Searches started before the first failure may fail too, but none is
+		// sent twice.
+		queries := searchQueries(client)
+		gt.N(t, len(queries)).GreaterOrEqual(1).LessOrEqual(5)
+		for i := 1; i < len(queries); i++ {
+			gt.NotEqual(t, queries[i], queries[i-1])
+		}
 	})
 }
 
@@ -833,6 +931,34 @@ func TestSyncFailures(t *testing.T) {
 		gt.Equal(t, st.LastError, model.SyncErrorAPI)
 	})
 
+	t.Run("failure on a later page keeps the earlier pages and the cursor", func(t *testing.T) {
+		client, repo, clk, syncer, search := setup(t)
+		_, err := syncer.RunOnce(ctx, false)
+		gt.NoError(t, err).Required()
+
+		clk.Advance(61 * time.Second)
+		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
+			if !strings.Contains(query, "author:") {
+				return search.fn(ctx, query, after)
+			}
+			if after != "" {
+				return nil, &interfaces.APIError{StatusCode: 500}
+			}
+			return &model.SearchPage{
+				Items:       []model.Item{issueItem("I_1", 1, clk.Now())},
+				HasNextPage: true,
+				EndCursor:   "c1",
+				RateLimit:   model.RateLimit{Remaining: -1},
+			}, nil
+		}
+		_, err = syncer.RunOnce(ctx, false)
+		gt.Error(t, err)
+		gt.NotNil(t, entries(t, repo)["I_1"])
+		st, err := repo.GetSyncState(ctx)
+		gt.NoError(t, err).Required()
+		gt.Equal(t, st.SearchCursor, t0)
+	})
+
 	t.Run("failure during notifications keeps the search cursor", func(t *testing.T) {
 		client, repo, clk, syncer, _ := setup(t)
 		_, err := syncer.RunOnce(ctx, false)
@@ -921,8 +1047,11 @@ func TestSyncWaitsAsGitHubAsks(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Retry-After counts from the response", func(t *testing.T) {
-		client, repo, clk, syncer, _ := setup(t)
-		client.SearchItemsFunc = func(context.Context, string, string) (*model.SearchPage, error) {
+		client, repo, clk, syncer, search := setup(t)
+		client.SearchItemsFunc = func(ctx context.Context, query, after string) (*model.SearchPage, error) {
+			if !strings.Contains(query, "review-requested:") {
+				return search.fn(ctx, query, after)
+			}
 			clk.Advance(40 * time.Second) // a slow request
 			return nil, &interfaces.RateLimitedError{RetryAfter: 30 * time.Second}
 		}
@@ -1003,7 +1132,9 @@ func TestSyncLeaseRenewal(t *testing.T) {
 		report, err := syncer.RunOnce(ctx, false)
 		gt.NoError(t, err).Required()
 		gt.True(t, report.Skipped)
-		gt.A(t, client.SearchCalls).Length(1)
+		// The other searches were sent with the stalled one, before the lease
+		// was lost; none of their items is written.
+		gt.N(t, len(client.SearchCalls)).LessOrEqual(5)
 		gt.M(t, entries(t, repo)).Length(0)
 
 		st, err := repo.GetSyncState(ctx)
