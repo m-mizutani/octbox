@@ -92,6 +92,55 @@ func TestEntryUnread(t *testing.T) {
 	gt.True(t, (&model.Entry{Item: item, ReadUpdatedAt: updated.Add(-time.Second)}).Unread())
 }
 
+func TestEntryArchived(t *testing.T) {
+	updated := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	item := validPR()
+	item.UpdatedAt = updated
+
+	cases := []struct {
+		name     string
+		mark     time.Time
+		archived bool
+	}{
+		{name: "never archived", archived: false},
+		{name: "archived at the current update", mark: updated, archived: true},
+		{name: "updated 1 ms after the archive", mark: updated.Add(-time.Millisecond), archived: false},
+		{name: "mark later than the update", mark: updated.Add(time.Second), archived: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := &model.Entry{Item: item, ArchivedUpdatedAt: c.mark}
+			gt.Equal(t, e.Archived(), c.archived)
+		})
+	}
+}
+
+func TestEntryInInbox(t *testing.T) {
+	updated := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	plain := validPR()
+	plain.UpdatedAt = updated
+	done := plain
+	done.ViewerApprovedAt = updated
+
+	cases := []struct {
+		name    string
+		item    model.Item
+		mark    time.Time
+		inInbox bool
+	}{
+		{name: "neither", item: plain, inInbox: true},
+		{name: "archived", item: plain, mark: updated, inInbox: false},
+		{name: "review done", item: done, inInbox: false},
+		{name: "archived and review done", item: done, mark: updated, inInbox: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := &model.Entry{Item: c.item, ArchivedUpdatedAt: c.mark}
+			gt.Equal(t, e.InInbox(), c.inInbox)
+		})
+	}
+}
+
 func TestItemViewerReviewDone(t *testing.T) {
 	approvedAt := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 	cases := []struct {

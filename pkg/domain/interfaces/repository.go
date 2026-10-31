@@ -22,6 +22,11 @@ type Repository interface {
 	ListRefreshIDs(ctx context.Context, pendingOnly bool) ([]model.ItemID, error)
 	SetRead(ctx context.Context, marks map[model.ItemID]time.Time) error
 	ClearRead(ctx context.Context, id model.ItemID) error
+	// SetArchived records that the user archived the item when its UpdatedAt
+	// was archivedUpdatedAt, replacing an earlier mark. An unknown ID fails.
+	SetArchived(ctx context.Context, id model.ItemID, archivedUpdatedAt time.Time) error
+	// ClearArchived removes the archive mark; no mark is not an error.
+	ClearArchived(ctx context.Context, id model.ItemID) error
 	// PurgeUncategorized deletes every item that belongs to no category.
 	PurgeUncategorized(ctx context.Context) (int, error)
 	GetSyncState(ctx context.Context) (*model.SyncState, error)

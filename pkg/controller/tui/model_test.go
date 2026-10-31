@@ -31,12 +31,21 @@ type fakeInbox struct {
 	openCalls   []model.ItemID
 	toggleCalls []model.ItemID
 	markCalls   [][]model.ItemID
+	archiveErr  error
+	listErr     error
+	// archiveCalls records each ToggleArchive call as "ID@seenUpdatedAt".
+	archiveCalls []string
+	listScopes   []model.FilterScope
 }
 
 func (f *fakeInbox) List(_ context.Context, filter model.Filter) ([]*model.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listCalls = append(f.listCalls, strings.Join(filter.Terms, " "))
+	f.listScopes = append(f.listScopes, filter.Scope)
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	var out []*model.Entry
 	for _, e := range f.entries {
 		if filter.Match(e) {
@@ -57,6 +66,28 @@ func (f *fakeInbox) ToggleRead(_ context.Context, id model.ItemID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.toggleCalls = append(f.toggleCalls, id)
+	return nil
+}
+
+// ToggleArchive records the call and, unless archiveErr is set, toggles the
+// archive mark of the entry like usecase.Inbox.
+func (f *fakeInbox) ToggleArchive(_ context.Context, id model.ItemID, seenUpdatedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archiveCalls = append(f.archiveCalls, string(id)+"@"+seenUpdatedAt.Format(time.RFC3339))
+	if f.archiveErr != nil {
+		return f.archiveErr
+	}
+	for _, e := range f.entries {
+		if e.Item.ID != id {
+			continue
+		}
+		if e.Archived() {
+			e.ArchivedUpdatedAt = time.Time{}
+		} else {
+			e.ArchivedUpdatedAt = seenUpdatedAt
+		}
+	}
 	return nil
 }
 
@@ -81,6 +112,8 @@ func (f *fakeInbox) resetCalls() {
 	f.openCalls = nil
 	f.toggleCalls = nil
 	f.markCalls = nil
+	f.archiveCalls = nil
+	f.listScopes = nil
 }
 
 func entry(id string, kind model.ItemKind, number int, title string, age time.Duration, unread bool) *model.Entry {
@@ -297,7 +330,7 @@ func TestFilter(t *testing.T) {
 
 	press(t, m, "enter")
 	lines = screen(m)
-	gt.S(t, lines[len(lines)-1]).Contains("j/k move")
+	gt.S(t, lines[len(lines)-1]).Contains("e archive")
 	gt.S(t, lines[len(lines)-2]).Contains("filter: au")
 
 	inbox.resetCalls()
@@ -457,7 +490,7 @@ func TestRender(t *testing.T) {
 		gt.N(t, lipgloss.Width(line)).LessOrEqual(80)
 	}
 	lines := screen(m)
-	gt.Equal(t, lines[0], "octbox  3 unread / 6 items")
+	gt.Equal(t, lines[0], "octbox  inbox  3 unread / 6 items")
 	for i := range ci {
 		row := lines[1+i]
 		gt.Equal(t, string([]rune(row)[4]), ci[i].mark)
@@ -484,7 +517,7 @@ func TestRender(t *testing.T) {
 
 	t.Run("header counts the filtered list", func(t *testing.T) {
 		press(t, m, "/", "t", "i", "t", "l", "e", "enter")
-		gt.Equal(t, screen(m)[0], "octbox  2 unread / 5 items")
+		gt.Equal(t, screen(m)[0], "octbox  inbox  2 unread / 5 items")
 		press(t, m, "esc")
 	})
 }
@@ -530,10 +563,133 @@ func TestEmptyStates(t *testing.T) {
 
 	_, cmd := m.Update(tui.SyncEventMsg{State: model.SyncState{LastSyncAt: now, NextRunAt: now, RateRemaining: -1}})
 	run(t, m, cmd)
+	gt.Equal(t, screen(m)[1], "No items in the inbox. Press a to show all items.")
+
+	press(t, m, "a")
 	gt.Equal(t, screen(m)[1], "No items.")
+	press(t, m, "a")
 
 	press(t, m, "/", "a", "u")
 	gt.Equal(t, screen(m)[1], `No items match "au".`)
+}
+
+func TestArchiveKey(t *testing.T) {
+	inbox := &fakeInbox{entries: threeEntries()}
+	m, _ := newModel(t, inbox)
+	inbox.resetCalls()
+
+	press(t, m, "j", "e")
+	gt.A(t, inbox.archiveCalls).Equal([]string{"PR_2@" + now.Add(-time.Hour).Format(time.RFC3339)})
+	gt.A(t, inbox.listCalls).Length(1)
+	// The archived row leaves the inbox; the same row number stays selected.
+	gt.Equal(t, selectedID(t, m, inbox), model.ItemID("I_3"))
+	gt.S(t, strings.Join(screen(m), "\n")).NotContains("Fix auth")
+
+	inbox.archiveErr = errors.New("database is locked")
+	press(t, m, "e")
+	gt.Equal(t, screen(m)[len(screen(m))-2], "Failed to update the archive state.")
+
+	empty := &fakeInbox{}
+	m, _ = newModel(t, empty)
+	press(t, m, "e")
+	gt.A(t, empty.archiveCalls).Length(0)
+}
+
+func TestScopeKey(t *testing.T) {
+	entries := threeEntries()
+	entries[1].ArchivedUpdatedAt = entries[1].Item.UpdatedAt // PR_2
+	done := entry("PR_d", model.ItemKindPullRequest, 4, "Approved one", 3*time.Hour, false)
+	done.Item.ViewerApprovedAt = done.Item.UpdatedAt
+	both := entry("PR_b", model.ItemKindPullRequest, 5, "Approved and archived", 4*time.Hour, false)
+	both.Item.ViewerApprovedAt = both.Item.UpdatedAt
+	both.ArchivedUpdatedAt = both.Item.UpdatedAt
+	inbox := &fakeInbox{entries: append(entries, done, both)}
+	m, _ := newModel(t, inbox)
+	sized(t, m, 80)
+
+	lines := screen(m)
+	gt.Equal(t, lines[0], "octbox  inbox  1 unread / 2 items")
+	gt.S(t, lines[1]).HasPrefix("● P")
+	gt.Equal(t, lines[len(lines)-1], "enter open  / filter  m read  e archive  a all  A read all  r sync  q quit")
+
+	inbox.resetCalls()
+	press(t, m, "a")
+	gt.A(t, inbox.listScopes).Equal([]model.FilterScope{model.FilterScopeAll})
+	lines = screen(m)
+	gt.Equal(t, lines[0], "octbox  all  1 unread / 5 items")
+	gt.Equal(t, lines[len(lines)-1], "enter open  / filter  m read  e archive  a inbox  A read all  r sync  q quit")
+	marks := map[string]string{}
+	for _, line := range lines[1:6] {
+		for _, e := range inbox.entries {
+			if strings.Contains(line, e.Item.Title+" ") {
+				marks[string(e.Item.ID)] = string([]rune(line)[:3])
+			}
+		}
+	}
+	// The mark, a space, then the unread column.
+	gt.Equal(t, marks, map[string]string{"PR_1": "  ●", "PR_2": "a  ", "I_3": "   ", "PR_d": "d  ", "PR_b": "a  "})
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		gt.N(t, lipgloss.Width(line)).LessOrEqual(80)
+	}
+
+	// e on an archived row ends the archive; the row stays listed.
+	press(t, m, "j", "e")
+	gt.S(t, screen(m)[2]).HasPrefix("  ")
+	gt.True(t, inbox.entries[1].ArchivedUpdatedAt.IsZero())
+
+	inbox.resetCalls()
+	press(t, m, "a")
+	gt.A(t, inbox.listScopes).Equal([]model.FilterScope{model.FilterScopeInbox})
+	gt.Equal(t, screen(m)[0], "octbox  inbox  1 unread / 3 items")
+}
+
+func TestScopeKeyIgnoresOlderList(t *testing.T) {
+	entries := threeEntries()
+	entries[1].ArchivedUpdatedAt = entries[1].Item.UpdatedAt
+	inbox := &fakeInbox{entries: entries}
+	m, _ := newModel(t, inbox)
+
+	press(t, m, "a")
+	gt.Equal(t, screen(m)[0], "octbox  all  1 unread / 3 items")
+
+	// A list requested in the all scope arrives after the switch back to the
+	// inbox and is dropped.
+	stale := tui.ListCmd(m)
+	press(t, m, "a")
+	gt.Equal(t, screen(m)[0], "octbox  inbox  1 unread / 2 items")
+	_, cmd := m.Update(stale())
+	run(t, m, cmd)
+	gt.Equal(t, screen(m)[0], "octbox  inbox  1 unread / 2 items")
+}
+
+func TestScopeKeyKeepsTheListedScope(t *testing.T) {
+	entries := threeEntries()
+	entries[1].ArchivedUpdatedAt = entries[1].Item.UpdatedAt
+	inbox := &fakeInbox{entries: entries}
+	m, _ := newModel(t, inbox)
+	press(t, m, "a")
+	gt.Equal(t, screen(m)[0], "octbox  all  1 unread / 3 items")
+
+	// While the inbox list is loading, the screen still shows the all view.
+	_, _ = m.Update(keyMsg("a"))
+	lines := screen(m)
+	gt.Equal(t, lines[0], "octbox  all  1 unread / 3 items")
+	gt.S(t, lines[len(lines)-1]).Contains("a inbox")
+
+	// A failed switch keeps the all view, with its marks, and a retries it.
+	inbox.listErr = errors.New("database is locked")
+	inbox.resetCalls()
+	press(t, m, "a")
+	lines = screen(m)
+	gt.Equal(t, lines[0], "octbox  all  1 unread / 3 items")
+	gt.S(t, lines[2]).HasPrefix("a ")
+	gt.Equal(t, lines[len(lines)-2], "Failed to read the local database.")
+
+	inbox.listErr = nil
+	inbox.resetCalls()
+	press(t, m, "a")
+	gt.A(t, inbox.listScopes).Equal([]model.FilterScope{model.FilterScopeInbox})
+	gt.Equal(t, screen(m)[0], "octbox  inbox  1 unread / 2 items")
 }
 
 func TestAge(t *testing.T) {
@@ -582,7 +738,7 @@ func BenchmarkFilterKeystroke(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		list, _ := inbox.List(context.Background(), model.NewFilter("webhook"))
+		list, _ := inbox.List(context.Background(), model.NewFilter("webhook", model.FilterScopeInbox))
 		_ = list
 		_ = m.View()
 	}

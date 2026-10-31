@@ -42,14 +42,14 @@ func TestNewCreatesFileAndSchema(t *testing.T) {
 	gt.NoError(t, err).Required()
 	gt.Equal(t, fileInfo.Mode().Perm(), os.FileMode(0o600))
 
-	gt.Equal(t, userVersion(t, path), 2)
+	gt.Equal(t, userVersion(t, path), 3)
 
 	// A second open does not run the migration again (it would fail on
 	// CREATE TABLE).
 	repo, err = sqlite.New(ctx, path)
 	gt.NoError(t, err).Required()
 	gt.NoError(t, repo.Close())
-	gt.Equal(t, userVersion(t, path), 2)
+	gt.Equal(t, userVersion(t, path), 3)
 }
 
 // createVersion1 writes a database of schema version 1 holding one pull
@@ -83,7 +83,7 @@ func TestNewMigratesVersion1(t *testing.T) {
 	repo, err := sqlite.New(ctx, path)
 	gt.NoError(t, err).Required()
 	defer func() { _ = repo.Close() }()
-	gt.Equal(t, userVersion(t, path), 2)
+	gt.Equal(t, userVersion(t, path), 3)
 	assertMigratedVersion1(t, repo)
 
 	// The added columns are written by the next save.
@@ -120,7 +120,7 @@ func TestNewMigratesVersion1Concurrently(t *testing.T) {
 		gt.NoError(t, errs[i]).Required()
 		defer func() { _ = repos[i].Close() }()
 	}
-	gt.Equal(t, userVersion(t, path), 2)
+	gt.Equal(t, userVersion(t, path), 3)
 	for _, repo := range repos {
 		assertMigratedVersion1(t, repo)
 	}
@@ -142,10 +142,48 @@ func assertMigratedVersion1(t *testing.T, repo *sqlite.Repository) {
 	gt.True(t, e.Item.ViewerAddressedAt.IsZero())
 	gt.A(t, e.Categories).Equal([]model.Category{model.CategoryReview})
 	gt.Equal(t, e.ReadUpdatedAt.UnixMilli(), int64(1790000000000))
+	gt.True(t, e.ArchivedUpdatedAt.IsZero())
 
 	state, err := repo.GetSyncState(ctx)
 	gt.NoError(t, err).Required()
 	gt.Equal(t, state.Viewer, "alice")
+}
+
+func TestNewMigratesVersion2(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "octbox.db")
+	createVersion1(t, path)
+	db, err := sql.Open("sqlite", "file:"+path)
+	gt.NoError(t, err).Required()
+	for _, stmt := range []string{
+		sqlite.SchemaV2,
+		"UPDATE items SET viewer_review_requested = 1 WHERE id = 'PR_1'",
+		"PRAGMA user_version = 2",
+	} {
+		_, err := db.Exec(stmt)
+		gt.NoError(t, err).Required()
+	}
+	gt.NoError(t, db.Close())
+
+	repo, err := sqlite.New(ctx, path)
+	gt.NoError(t, err).Required()
+	defer func() { _ = repo.Close() }()
+	gt.Equal(t, userVersion(t, path), 3)
+
+	// Rows of version 2 are kept and no item is archived.
+	e, err := repo.GetEntry(ctx, "PR_1")
+	gt.NoError(t, err).Required()
+	gt.Equal(t, e.Item.Title, "Add retry")
+	gt.True(t, e.Item.ViewerReviewRequested)
+	gt.A(t, e.Categories).Equal([]model.Category{model.CategoryReview})
+	gt.Equal(t, e.ReadUpdatedAt.UnixMilli(), int64(1790000000000))
+	gt.True(t, e.ArchivedUpdatedAt.IsZero())
+
+	// The added table is usable.
+	gt.NoError(t, repo.SetArchived(ctx, "PR_1", e.Item.UpdatedAt)).Required()
+	e, err = repo.GetEntry(ctx, "PR_1")
+	gt.NoError(t, err).Required()
+	gt.True(t, e.Archived())
 }
 
 func TestNewRejectsNewerSchema(t *testing.T) {
@@ -154,7 +192,7 @@ func TestNewRejectsNewerSchema(t *testing.T) {
 
 	db, err := sql.Open("sqlite", "file:"+path)
 	gt.NoError(t, err).Required()
-	_, err = db.Exec("PRAGMA user_version = 3")
+	_, err = db.Exec("PRAGMA user_version = 4")
 	gt.NoError(t, err).Required()
 	gt.NoError(t, db.Close())
 

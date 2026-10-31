@@ -192,9 +192,26 @@ type Entry struct {
 	Item          Item
 	Categories    []Category // order of Categories
 	ReadUpdatedAt time.Time  // zero when never read
+	// ArchivedUpdatedAt is the Item.UpdatedAt shown to the user when they
+	// archived the item. Zero when never archived. A later Item.UpdatedAt
+	// means the item was updated after it was archived.
+	ArchivedUpdatedAt time.Time
 }
 
 // Unread reports whether the item was updated after the user last read it.
 func (x *Entry) Unread() bool {
 	return x.ReadUpdatedAt.Before(x.Item.UpdatedAt)
+}
+
+// Archived reports whether the user archived the item and it has not been
+// updated since.
+func (x *Entry) Archived() bool {
+	return !x.ArchivedUpdatedAt.IsZero() && !x.Item.UpdatedAt.After(x.ArchivedUpdatedAt)
+}
+
+// InInbox reports whether the inbox lists the item: it is not archived and
+// the viewer's review of it is not done. The unread count and the update
+// indicator use the same condition.
+func (x *Entry) InInbox() bool {
+	return !x.Archived() && !x.Item.ViewerReviewDone()
 }
