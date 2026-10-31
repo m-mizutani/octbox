@@ -15,6 +15,11 @@ type GitHubClient interface {
 	GetItems(ctx context.Context, ids []model.ItemID) (*model.ItemsResult, error)
 	// ResolveItems fetches up to 50 items by repository and number.
 	ResolveItems(ctx context.Context, refs []model.ItemRef) (*model.ItemsResult, error)
+	// ListComments fetches one page for each of up to 10 queries: 50
+	// conversation comments and reviews (with up to 20 line comments each),
+	// or 20 line comments of one review. Each page lists in Next the queries
+	// for the older pages. Comments written before Since may be included.
+	ListComments(ctx context.Context, queries []model.CommentQuery) (*model.CommentsResult, error)
 	// ListNotifications follows every page; NotModified is set on 304.
 	ListNotifications(ctx context.Context, since time.Time, lastModified string) (*model.NotificationPage, error)
 }

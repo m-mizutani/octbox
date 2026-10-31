@@ -154,6 +154,61 @@ func TestUpdateDetector(t *testing.T) {
 		gt.Equal(t, indicator.CallCount("show_update"), 2)
 	})
 
+	t.Run("an item approved by the viewer is not shown until a review is requested again", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		saveRead(t, repo, prItem("PR_1", 1, t0))
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		// Approving updates the pull request on GitHub.
+		approved := prItem("PR_1", 1, t0.Add(time.Minute))
+		approved.ViewerApprovedAt = t0.Add(time.Minute)
+		saveUnread(t, repo, approved)
+		gt.NoError(t, detector.Check(ctx)).Required()
+
+		// A comment by the author after the approval, not addressed to the
+		// viewer.
+		approved.UpdatedAt = t0.Add(2 * time.Minute)
+		saveUnread(t, repo, approved)
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 0)
+
+		rerequested := approved
+		rerequested.UpdatedAt = t0.Add(3 * time.Minute)
+		rerequested.ViewerReviewRequested = true
+		saveUnread(t, repo, rerequested)
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 1)
+	})
+
+	t.Run("an item approved by the viewer is shown when a comment is addressed to the viewer", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		approved := prItem("PR_1", 1, t0)
+		approved.ViewerApprovedAt = t0
+		saveRead(t, repo, approved)
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		addressed := approved
+		addressed.UpdatedAt = t0.Add(time.Minute)
+		addressed.ViewerAddressedAt = t0.Add(time.Minute)
+		saveUnread(t, repo, addressed)
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 1)
+	})
+
+	t.Run("an unread item shown again with the same updatedAt counts as new", func(t *testing.T) {
+		repo, indicator, detector := setup(t)
+		approved := prItem("PR_1", 1, t0)
+		approved.ViewerApprovedAt = t0
+		saveUnread(t, repo, approved)
+		gt.NoError(t, detector.Start(ctx)).Required()
+
+		dismissed := approved
+		dismissed.ViewerApprovedAt = time.Time{}
+		saveUnread(t, repo, dismissed)
+		gt.NoError(t, detector.Check(ctx)).Required()
+		gt.Equal(t, indicator.CallCount("show_update"), 1)
+	})
+
 	t.Run("a failed ShowUpdate is not retried", func(t *testing.T) {
 		repo, indicator, detector := setup(t)
 		gt.NoError(t, detector.Start(ctx)).Required()

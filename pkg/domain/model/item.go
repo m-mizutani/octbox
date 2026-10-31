@@ -83,6 +83,21 @@ type Item struct {
 	CI        CIState     // CIStateNone for issues
 	Review    ReviewState // ReviewStateNone for issues
 	UpdatedAt time.Time   // GitHub updatedAt, UTC
+	// ViewerApprovedAt is when the viewer submitted their latest review of
+	// the pull request, when that review is an approval. It is zero when the
+	// viewer has not reviewed it, or when the latest review is not an
+	// approval (dismissed, a comment, or a change request). Zero for issues.
+	ViewerApprovedAt time.Time
+	// ViewerReviewRequested is true while a review of the pull request is
+	// requested from the viewer or a team of the viewer. GitHub removes the
+	// request when the viewer submits a review, and adds it again when the
+	// author re-requests one. false for issues.
+	ViewerReviewRequested bool
+	// ViewerAddressedAt is when the latest comment addressed to the viewer
+	// (see LatestAddressedAt) was written after ViewerApprovedAt. The GitHub
+	// client leaves it zero; the syncer sets it from the comments of the pull
+	// request. Zero when no such comment was found, and for issues.
+	ViewerAddressedAt time.Time
 	// RepoArchived is true when the repository is archived. Such items are
 	// deleted like closed ones, so it is never stored.
 	RepoArchived bool
@@ -148,9 +163,24 @@ func (x *Item) Validate() error {
 			return invalid("ci")
 		case x.Review != ReviewStateNone:
 			return invalid("review")
+		case !x.ViewerApprovedAt.IsZero():
+			return invalid("viewer_approved_at")
+		case x.ViewerReviewRequested:
+			return invalid("viewer_review_requested")
+		case !x.ViewerAddressedAt.IsZero():
+			return invalid("viewer_addressed_at")
 		}
 	}
 	return nil
+}
+
+// ViewerReviewDone reports whether the viewer has approved the pull request,
+// no review is requested from the viewer again, and no comment addressed to
+// the viewer was written after the approval. The inbox, the unread count,
+// and the update indicator leave such items out.
+func (x *Item) ViewerReviewDone() bool {
+	return !x.ViewerApprovedAt.IsZero() && !x.ViewerReviewRequested &&
+		!x.ViewerAddressedAt.After(x.ViewerApprovedAt)
 }
 
 type ItemRef struct {

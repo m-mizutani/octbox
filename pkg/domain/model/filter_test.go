@@ -55,6 +55,16 @@ func TestFilterMatch(t *testing.T) {
 		gt.True(t, model.NewFilter("").Match(entry(pr)))
 	})
 
+	t.Run("pull request approved by the viewer never matches", func(t *testing.T) {
+		approved := pr
+		approved.ViewerApprovedAt = approved.UpdatedAt
+		gt.False(t, model.NewFilter("").Match(entry(approved, model.CategoryReview)))
+		gt.False(t, model.NewFilter("retry").Match(entry(approved, model.CategoryReview, model.CategoryAssigned)))
+
+		approved.ViewerReviewRequested = true
+		gt.True(t, model.NewFilter("").Match(entry(approved, model.CategoryReview)))
+	})
+
 	t.Run("no category never matches", func(t *testing.T) {
 		e := &model.Entry{Item: pr}
 		gt.False(t, model.NewFilter("").Match(e))

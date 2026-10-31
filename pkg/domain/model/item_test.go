@@ -69,6 +69,9 @@ func TestItemValidate(t *testing.T) {
 		"draft issue":       func(x *model.Item) { x.IsDraft = true },
 		"issue with ci":     func(x *model.Item) { x.CI = model.CIStateSuccess },
 		"issue with review": func(x *model.Item) { x.Review = model.ReviewStateApproved },
+		"issue approved":    func(x *model.Item) { x.ViewerApprovedAt = x.UpdatedAt },
+		"issue requested":   func(x *model.Item) { x.ViewerReviewRequested = true },
+		"issue addressed":   func(x *model.Item) { x.ViewerAddressedAt = x.UpdatedAt },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -87,6 +90,34 @@ func TestEntryUnread(t *testing.T) {
 	gt.True(t, (&model.Entry{Item: item}).Unread())
 	gt.False(t, (&model.Entry{Item: item, ReadUpdatedAt: updated}).Unread())
 	gt.True(t, (&model.Entry{Item: item, ReadUpdatedAt: updated.Add(-time.Second)}).Unread())
+}
+
+func TestItemViewerReviewDone(t *testing.T) {
+	approvedAt := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name        string
+		approvedAt  time.Time
+		requested   bool
+		addressedAt time.Time
+		done        bool
+	}{
+		{name: "approved", approvedAt: approvedAt, done: true},
+		{name: "approved and requested again", approvedAt: approvedAt, requested: true, done: false},
+		{name: "addressed after the approval", approvedAt: approvedAt, addressedAt: approvedAt.Add(time.Second), done: false},
+		{name: "addressed at the approval", approvedAt: approvedAt, addressedAt: approvedAt, done: true},
+		{name: "addressed before a later approval", approvedAt: approvedAt, addressedAt: approvedAt.Add(-time.Hour), done: true},
+		{name: "requested only", requested: true, done: false},
+		{name: "not reviewed", done: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			item := validPR()
+			item.ViewerApprovedAt = c.approvedAt
+			item.ViewerReviewRequested = c.requested
+			item.ViewerAddressedAt = c.addressedAt
+			gt.Equal(t, item.ViewerReviewDone(), c.done)
+		})
+	}
 }
 
 func TestRepoNameString(t *testing.T) {

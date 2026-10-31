@@ -22,12 +22,14 @@ type GitHubClient struct {
 	GetItemsFunc          func(ctx context.Context, ids []model.ItemID) (*model.ItemsResult, error)
 	ResolveItemsFunc      func(ctx context.Context, refs []model.ItemRef) (*model.ItemsResult, error)
 	ListNotificationsFunc func(ctx context.Context, since time.Time, lastModified string) (*model.NotificationPage, error)
+	ListCommentsFunc      func(ctx context.Context, queries []model.CommentQuery) (*model.CommentsResult, error)
 
 	ViewerCalls       int
 	SearchCalls       []SearchCall
 	GetItemsCalls     [][]model.ItemID
 	ResolveCalls      [][]model.ItemRef
 	NotificationCalls []NotificationCall
+	CommentCalls      [][]model.CommentQuery
 }
 
 type SearchCall struct {
@@ -92,6 +94,20 @@ func (x *GitHubClient) ListNotifications(ctx context.Context, since time.Time, l
 	return &model.NotificationPage{NotModified: true}, nil
 }
 
+func (x *GitHubClient) ListComments(ctx context.Context, queries []model.CommentQuery) (*model.CommentsResult, error) {
+	x.mu.Lock()
+	x.CommentCalls = append(x.CommentCalls, append([]model.CommentQuery(nil), queries...))
+	x.mu.Unlock()
+	if x.ListCommentsFunc != nil {
+		return x.ListCommentsFunc(ctx, queries)
+	}
+	result := &model.CommentsResult{RateLimit: model.RateLimit{Remaining: -1}}
+	for _, q := range queries {
+		result.Pages = append(result.Pages, model.CommentPage{Query: q, Found: true})
+	}
+	return result, nil
+}
+
 // Reset clears the recorded calls.
 func (x *GitHubClient) Reset() {
 	x.mu.Lock()
@@ -101,6 +117,7 @@ func (x *GitHubClient) Reset() {
 	x.GetItemsCalls = nil
 	x.ResolveCalls = nil
 	x.NotificationCalls = nil
+	x.CommentCalls = nil
 }
 
 // DeviceAuthenticator returns Code from StartDeviceAuth and Token or

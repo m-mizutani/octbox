@@ -19,8 +19,10 @@ import (
 type UpdateDetector struct {
 	repo      interfaces.Repository
 	indicator interfaces.UpdateIndicator
-	// known maps each stored item to its updatedAt at the previous check.
-	// nil until a list has been read once.
+	// known maps each stored item to its updatedAt at the previous check,
+	// except items whose review by the viewer was done (Item.ViewerReviewDone):
+	// such an item counts as new when a review is requested from the viewer
+	// again. nil until a list has been read once.
 	known map[model.ItemID]time.Time
 }
 
@@ -61,6 +63,9 @@ func (x *UpdateDetector) Check(ctx context.Context) error {
 
 	updated := 0
 	for _, e := range entries {
+		if e.Item.ViewerReviewDone() {
+			continue
+		}
 		prev, ok := x.known[e.Item.ID]
 		if e.Unread() && (!ok || !prev.Equal(e.Item.UpdatedAt)) {
 			updated++
@@ -96,7 +101,9 @@ func (x *UpdateDetector) listUpdatedAt(ctx context.Context) (map[model.ItemID]ti
 func updatedAtOf(entries []*model.Entry) map[model.ItemID]time.Time {
 	m := make(map[model.ItemID]time.Time, len(entries))
 	for _, e := range entries {
-		m[e.Item.ID] = e.Item.UpdatedAt
+		if !e.Item.ViewerReviewDone() {
+			m[e.Item.ID] = e.Item.UpdatedAt
+		}
 	}
 	return m
 }

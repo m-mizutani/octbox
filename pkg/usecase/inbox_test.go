@@ -50,6 +50,26 @@ func TestInbox(t *testing.T) {
 		gt.Equal(t, list[0].Item.ID, model.ItemID("PR_1"))
 	})
 
+	t.Run("List leaves out pull requests approved by the viewer until a review is requested again or a comment is addressed to the viewer", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		approved := prItem("PR_a", 10, t0)
+		approved.ViewerApprovedAt = t0
+		rerequested := prItem("PR_r", 11, t0.Add(time.Minute))
+		rerequested.ViewerApprovedAt = t0
+		rerequested.ViewerReviewRequested = true
+		addressed := prItem("PR_m", 12, t0.Add(2*time.Minute))
+		addressed.ViewerApprovedAt = t0
+		addressed.ViewerAddressedAt = t0.Add(2 * time.Minute)
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{approved, rerequested, addressed})).Required()
+		gt.NoError(t, repo.AddCategory(ctx, model.CategoryReview, []model.ItemID{"PR_a", "PR_r", "PR_m"})).Required()
+
+		list, err := usecase.NewInbox(repo, &usecasetest.Browser{}).List(ctx, model.NewFilter(""))
+		gt.NoError(t, err).Required()
+		gt.A(t, list).Length(2).Required()
+		gt.Equal(t, list[0].Item.ID, model.ItemID("PR_m"))
+		gt.Equal(t, list[1].Item.ID, model.ItemID("PR_r"))
+	})
+
 	t.Run("Open marks read only when the browser opened", func(t *testing.T) {
 		browser.Err = errors.New("no browser")
 		openErr := inbox.Open(ctx, "PR_1")

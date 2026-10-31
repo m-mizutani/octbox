@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
 
 	"github.com/m-mizutani/goerr/v2"
 
@@ -13,7 +14,13 @@ import (
 //go:embed schema_v1.sql
 var schemaV1 string
 
-const schemaVersion = 1
+//go:embed schema_v2.sql
+var schemaV2 string
+
+// schemaSteps[i] brings the file from version i to version i+1.
+var schemaSteps = []string{schemaV1, schemaV2}
+
+var schemaVersion = len(schemaSteps)
 
 // migrate brings the schema to schemaVersion. PRAGMA user_version holds the
 // version of the file.
@@ -46,13 +53,18 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
-		return goerr.Wrap(err, "failed to create the schema")
+	for v := version; v < schemaVersion; v++ {
+		if _, err := tx.ExecContext(ctx, schemaSteps[v]); err != nil {
+			return goerr.Wrap(err, "failed to migrate the schema", goerr.V("from_version", v))
+		}
+		if v == 0 {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO sync_state (id) VALUES (1)"); err != nil {
+				return goerr.Wrap(err, "failed to create the sync state")
+			}
+		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO sync_state (id) VALUES (1)"); err != nil {
-		return goerr.Wrap(err, "failed to create the sync state")
-	}
-	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+	// PRAGMA does not take bound parameters; schemaVersion is not user input.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return goerr.Wrap(err, "failed to set the schema version")
 	}
 	if err := tx.Commit(); err != nil {
