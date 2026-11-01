@@ -42,6 +42,19 @@ func TestUnreadCountReporter(t *testing.T) {
 		gt.A(t, display.ShownCounts()).Equal([]int{3})
 	})
 
+	t.Run("Report leaves out archived items until they are updated", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		saveUnread(t, repo, prItem("PR_1", 1, t0), issueItem("I_1", 2, t0))
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", t0)).Required()
+		display := &usecasetest.UnreadCountDisplay{}
+		reporter := usecase.NewUnreadCountReporter(repo, display, time.Hour)
+
+		gt.NoError(t, reporter.Report(ctx)).Required()
+		saveUnread(t, repo, prItem("PR_1", 1, t0.Add(time.Minute)))
+		gt.NoError(t, reporter.Report(ctx)).Required()
+		gt.A(t, display.ShownCounts()).Equal([]int{1, 2})
+	})
+
 	t.Run("Report shows zero for an empty database", func(t *testing.T) {
 		repo, _ := newRepo(t)
 		display := &usecasetest.UnreadCountDisplay{}

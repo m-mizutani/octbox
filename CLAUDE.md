@@ -17,8 +17,12 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   reads, writes, or deletes the token. `Syncer` decides what to fetch from
   GitHub and is the only writer of items, category memberships, and the sync
   state (cursor, full sync period, rate limit wait, lease). `Inbox` lists
-  items and is the only component that opens items and writes read marks for
-  the user. `UpdateDetector` decides, after each sync, whether an item became
+  items and is the only component that opens items and writes read marks and
+  archive marks for the user. An archive mark holds the `updatedAt` shown when
+  the user archived the item; the item is archived while its `updatedAt` is not
+  later (`Entry.Archived`), so the syncer ends an archive by saving an update
+  and never writes archive marks. `Entry.InInbox` is the one condition the
+  inbox, the unread count, and the update detector use. `UpdateDetector` decides, after each sync, whether an item became
   unread with an ID and updatedAt pair it has not seen, and shows it on an
   `UpdateIndicator` (the herdr pane); whether the user viewed it is herdr's
   decision. `UnreadCountReporter` reads the unread count from the database

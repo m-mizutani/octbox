@@ -62,6 +62,8 @@ After you enter the code and approve, the inbox opens and the first sync starts.
 | `Enter` | Open the item in the browser and mark it read |
 | `/` | Filter: type words; items containing all of them are shown. `Enter` keeps the filter, `Esc` clears it |
 | `m` | Toggle read / unread |
+| `e` | Archive the item: it leaves the inbox until it is updated on GitHub. On an archived item (in the all view), remove the archive |
+| `a` | Switch between the inbox and the all view, which also lists archived items and pull requests you approved |
 | `A` | Mark every listed item read |
 | `r` | Sync now, also while waiting to retry a failed sync. Every listed item is fetched again, so items closed, archived, or deleted on GitHub disappear |
 | `q`, `Ctrl-c` | Quit |
@@ -76,11 +78,23 @@ The filter matches the title, the repository, the number (`#482`), the author (`
 
 From the left: `●` unread, `P` pull request or `I` issue (gray for a draft), the CI status (`✓` passed, `✗` failed, `●` running), the review status (`approved`, `changes` requested, `review` required), the repository and number, the title, the author, and the time since the last update. An unread row has a bold title; a read row shows its repository, title, author, and time in gray, while the type, CI, and review statuses keep their colors.
 
+The header shows which view is open (`inbox` or `all`). In the all view, each row starts with one more column telling why the inbox does not list it: `a` archived, `d` a pull request you approved (see above). An archived pull request you approved shows `a`.
+
+### Archiving items
+
+Press `e` to archive the selected item. It leaves the inbox, the unread count, and the herdr status until GitHub reports an update to it (a later update time, the same time octbox uses for unread items). Then the archive ends without any action from you: the item is listed in the inbox again and herdr shows the update. Pressing `e` on an archived item in the all view also ends the archive, without a herdr update. Archiving does not change whether the item is read, and does not change anything on GitHub.
+
+A pull request you approved stays out of the inbox after its archive ends, until one of the conditions for approved pull requests above is met. In the all view its mark changes from `a` to `d`.
+
+What counts as an update is decided by GitHub's update time. A new comment moves it, so a comment you write yourself also brings the item back. A finished CI run does not move it, so the item stays archived. If a pull request you approved is archived and your review is requested again without the update time changing, it stays archived; look for it in the all view.
+
+Archiving an item is not the same as an archived repository. Items of archived repositories are removed from octbox (see the top of this page).
+
 ### Running in herdr
 
-When octbox runs in a pane of [Herdr TUI](https://herdr.dev/tui/), it appears in the herdr sidebar as the agent `octbox`. When a sync brings a new update to an item (the item is unread and its update time differs from what octbox saw at the previous sync) while you are not viewing that pane, its status turns to done (a filled dot); viewing the pane turns it back to idle. The status does not change for items that are already unread when octbox starts, for items you mark unread with `m`, or for items fetched again without a new update, such as pull requests whose CI is still running.
+When octbox runs in a pane of [Herdr TUI](https://herdr.dev/tui/), it appears in the herdr sidebar as the agent `octbox`. When a sync brings a new update to an item (the item is unread and its update time differs from what octbox saw at the previous sync) while you are not viewing that pane, its status turns to done (a filled dot); viewing the pane turns it back to idle. The status does not change for items that are already unread when octbox starts, for items you mark unread with `m` or move back from the archive with `e`, for archived items, or for items fetched again without a new update, such as pull requests whose CI is still running.
 
-octbox also shows the number of unread items. In its row of the herdr sidebar, the agent name `octbox` becomes `octbox 2 unread`. In addition, `[octbox] 2 unread` becomes the name of its tab when its pane is the only one in the tab, and the name of its pane when the tab is split (the sidebar shows tab names but, by default, not pane names). The number is read from the database every 2 seconds, so it follows items you open or mark, syncs, and other octbox processes sharing the database. Splitting the tab, closing the other panes, or moving the pane to another tab moves the number, and the name it leaves is put back. A name you set while octbox runs is kept until the number changes. When octbox quits, the sidebar row is removed and the tab or pane gets its previous name back; herdr cannot turn a tab back to its automatic name (its number), so such a tab keeps the same number as a name of its own.
+octbox also shows the number of unread items in the inbox (archived items are not counted). In its row of the herdr sidebar, the agent name `octbox` becomes `octbox 2 unread`. In addition, `[octbox] 2 unread` becomes the name of its tab when its pane is the only one in the tab, and the name of its pane when the tab is split (the sidebar shows tab names but, by default, not pane names). The number is read from the database every 2 seconds, so it follows items you open or mark, syncs, and other octbox processes sharing the database. Splitting the tab, closing the other panes, or moving the pane to another tab moves the number, and the name it leaves is put back. A name you set while octbox runs is kept until the number changes. When octbox quits, the sidebar row is removed and the tab or pane gets its previous name back; herdr cannot turn a tab back to its automatic name (its number), so such a tab keeps the same number as a name of its own.
 
 octbox detects herdr from the variables herdr sets in its panes (`HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`) and needs no setup; outside herdr it sends nothing. Requests to herdr's socket contain the pane and tab IDs, the name `octbox`, the state, and the names with the unread count; GitHub tokens and item contents are never sent. When octbox quits, it removes itself from the sidebar. herdr may play a sound when the status turns to done, as set by `[ui.sound]` in herdr's configuration.
 

@@ -50,8 +50,8 @@ func (x *UnreadCountReporter) Run(ctx context.Context) {
 	}
 }
 
-// Report counts the unread items, except those whose review by the viewer is
-// done, and shows the count once.
+// Report counts the unread items the inbox lists (Entry.InInbox) and shows
+// the count once.
 func (x *UnreadCountReporter) Report(ctx context.Context) error {
 	entries, err := x.repo.ListEntries(ctx)
 	if err != nil {
@@ -59,7 +59,7 @@ func (x *UnreadCountReporter) Report(ctx context.Context) error {
 	}
 	count := 0
 	for _, e := range entries {
-		if e.Unread() && !e.Item.ViewerReviewDone() {
+		if e.Unread() && e.InInbox() {
 			count++
 		}
 	}

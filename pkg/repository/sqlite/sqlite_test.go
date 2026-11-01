@@ -261,6 +261,106 @@ func TestReadMarks(t *testing.T) {
 	gt.Error(t, repo.SetRead(ctx, map[model.ItemID]time.Time{"missing": baseTime}))
 }
 
+func TestArchiveMarks(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("set, overwrite and clear", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_1", 1, baseTime)})).Required()
+		gt.NoError(t, repo.AddCategory(ctx, model.CategoryReview, []model.ItemID{"PR_1"})).Required()
+		gt.NoError(t, repo.SetRead(ctx, map[model.ItemID]time.Time{"PR_1": baseTime.Add(-time.Hour)})).Required()
+
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", baseTime.Add(-time.Minute))).Required()
+		e, err := repo.GetEntry(ctx, "PR_1")
+		gt.NoError(t, err).Required()
+		gt.Equal(t, e.ArchivedUpdatedAt, baseTime.Add(-time.Minute))
+		gt.Equal(t, e.ReadUpdatedAt, baseTime.Add(-time.Hour))
+		gt.A(t, e.Categories).Equal([]model.Category{model.CategoryReview})
+		gt.Equal(t, e.Item, pr("PR_1", 1, baseTime))
+
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", baseTime)).Required()
+		entries, err := repo.ListEntries(ctx)
+		gt.NoError(t, err).Required()
+		gt.A(t, entries).Length(1)
+		gt.Equal(t, entries[0].ArchivedUpdatedAt, baseTime)
+		gt.Equal(t, entries[0].ReadUpdatedAt, baseTime.Add(-time.Hour))
+
+		gt.NoError(t, repo.ClearArchived(ctx, "PR_1")).Required()
+		e, err = repo.GetEntry(ctx, "PR_1")
+		gt.NoError(t, err).Required()
+		gt.True(t, e.ArchivedUpdatedAt.IsZero())
+		gt.Equal(t, e.ReadUpdatedAt, baseTime.Add(-time.Hour))
+
+		// Clearing an item without a mark is not an error.
+		gt.NoError(t, repo.ClearArchived(ctx, "PR_1"))
+		gt.NoError(t, repo.ClearArchived(ctx, "missing"))
+	})
+
+	t.Run("unknown item fails", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		gt.Error(t, repo.SetArchived(ctx, "missing", baseTime))
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("missing", 1, baseTime)})).Required()
+		e, err := repo.GetEntry(ctx, "missing")
+		gt.NoError(t, err).Required()
+		gt.True(t, e.ArchivedUpdatedAt.IsZero())
+	})
+
+	t.Run("saving a later update keeps the mark and ends the archive", func(t *testing.T) {
+		repo, _ := newRepo(t)
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_1", 1, baseTime)})).Required()
+		gt.NoError(t, repo.SetArchived(ctx, "PR_1", baseTime)).Required()
+
+		// A save with the same updatedAt (for example, CI finished).
+		same := pr("PR_1", 1, baseTime)
+		same.CI = model.CIStateFailure
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{same})).Required()
+		e, err := repo.GetEntry(ctx, "PR_1")
+		gt.NoError(t, err).Required()
+		gt.True(t, e.Archived())
+
+		gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_1", 1, baseTime.Add(time.Minute))})).Required()
+		e, err = repo.GetEntry(ctx, "PR_1")
+		gt.NoError(t, err).Required()
+		gt.Equal(t, e.ArchivedUpdatedAt, baseTime)
+		gt.False(t, e.Archived())
+	})
+
+	// Each way of deleting an item is checked on its own: the item is saved
+	// again right after the deletion and must come back without a mark.
+	deletions := []struct {
+		name   string
+		delete func(t *testing.T, repo *sqlite.Repository)
+	}{
+		{name: "DeleteItems", delete: func(t *testing.T, repo *sqlite.Repository) {
+			gt.NoError(t, repo.DeleteItems(ctx, []model.ItemID{"PR_1"})).Required()
+		}},
+		{name: "PurgeUncategorized", delete: func(t *testing.T, repo *sqlite.Repository) {
+			n, err := repo.PurgeUncategorized(ctx)
+			gt.NoError(t, err).Required()
+			gt.Equal(t, n, 1)
+		}},
+		{name: "ResetAll", delete: func(t *testing.T, repo *sqlite.Repository) {
+			gt.NoError(t, repo.ResetAll(ctx)).Required()
+		}},
+	}
+	for _, d := range deletions {
+		t.Run(d.name+" removes the mark", func(t *testing.T) {
+			repo, _ := newRepo(t)
+			gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_1", 1, baseTime)})).Required()
+			gt.NoError(t, repo.SetArchived(ctx, "PR_1", baseTime)).Required()
+
+			d.delete(t, repo)
+			_, err := repo.GetEntry(ctx, "PR_1")
+			gt.Error(t, err).Is(interfaces.ErrItemNotFound)
+
+			gt.NoError(t, repo.SaveItems(ctx, []model.Item{pr("PR_1", 1, baseTime)})).Required()
+			e, err := repo.GetEntry(ctx, "PR_1")
+			gt.NoError(t, err).Required()
+			gt.True(t, e.ArchivedUpdatedAt.IsZero())
+		})
+	}
+}
+
 func TestPurgeUncategorized(t *testing.T) {
 	ctx := context.Background()
 	repo, _ := newRepo(t)

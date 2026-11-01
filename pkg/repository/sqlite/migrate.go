@@ -17,8 +17,11 @@ var schemaV1 string
 //go:embed schema_v2.sql
 var schemaV2 string
 
+//go:embed schema_v3.sql
+var schemaV3 string
+
 // schemaSteps[i] brings the file from version i to version i+1.
-var schemaSteps = []string{schemaV1, schemaV2}
+var schemaSteps = []string{schemaV1, schemaV2, schemaV3}
 
 var schemaVersion = len(schemaSteps)
 

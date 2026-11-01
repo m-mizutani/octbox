@@ -210,8 +210,9 @@ func (x *Repository) ReplaceCategory(ctx context.Context, category model.Categor
 const selectEntry = `
 SELECT i.id, i.kind, i.repo_owner, i.repo_name, i.number, i.title, i.url, i.author,
        i.is_draft, i.ci_state, i.review_state, i.viewer_approved_at, i.viewer_review_requested,
-       i.viewer_addressed_at, i.updated_at, r.read_updated_at
-FROM items i LEFT JOIN read_marks r ON r.item_id = i.id`
+       i.viewer_addressed_at, i.updated_at, r.read_updated_at, a.archived_updated_at
+FROM items i LEFT JOIN read_marks r ON r.item_id = i.id
+             LEFT JOIN archive_marks a ON a.item_id = i.id`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -223,12 +224,15 @@ func scanEntry(s scanner) (*model.Entry, error) {
 		id, kind, ci, review                   string
 		updatedAt                              int64
 		approvedAt, addressedAt, readUpdatedAt sql.NullInt64
+		archivedUpdatedAt                      sql.NullInt64
 	)
 	if err := s.Scan(&id, &kind, &e.Item.Repo.Owner, &e.Item.Repo.Name, &e.Item.Number,
 		&e.Item.Title, &e.Item.URL, &e.Item.Author, &e.Item.IsDraft, &ci, &review,
-		&approvedAt, &e.Item.ViewerReviewRequested, &addressedAt, &updatedAt, &readUpdatedAt); err != nil {
+		&approvedAt, &e.Item.ViewerReviewRequested, &addressedAt, &updatedAt, &readUpdatedAt,
+		&archivedUpdatedAt); err != nil {
 		return nil, err
 	}
+	e.ArchivedUpdatedAt = fromMillis(archivedUpdatedAt)
 	e.Item.ViewerApprovedAt = fromMillis(approvedAt)
 	e.Item.ViewerAddressedAt = fromMillis(addressedAt)
 	e.Item.ID = model.ItemID(id)
@@ -383,6 +387,23 @@ ON CONFLICT (item_id) DO UPDATE SET read_updated_at = excluded.read_updated_at`,
 func (x *Repository) ClearRead(ctx context.Context, id model.ItemID) error {
 	if _, err := x.db.ExecContext(ctx, "DELETE FROM read_marks WHERE item_id = ?", string(id)); err != nil {
 		return goerr.Wrap(err, "failed to clear a read mark", goerr.V("item_id", id))
+	}
+	return nil
+}
+
+func (x *Repository) SetArchived(ctx context.Context, id model.ItemID, archivedUpdatedAt time.Time) error {
+	if _, err := x.db.ExecContext(ctx, `
+INSERT INTO archive_marks (item_id, archived_updated_at) VALUES (?, ?)
+ON CONFLICT (item_id) DO UPDATE SET archived_updated_at = excluded.archived_updated_at`,
+		string(id), archivedUpdatedAt.UnixMilli()); err != nil {
+		return goerr.Wrap(err, "failed to set an archive mark", goerr.V("item_id", id))
+	}
+	return nil
+}
+
+func (x *Repository) ClearArchived(ctx context.Context, id model.ItemID) error {
+	if _, err := x.db.ExecContext(ctx, "DELETE FROM archive_marks WHERE item_id = ?", string(id)); err != nil {
+		return goerr.Wrap(err, "failed to clear an archive mark", goerr.V("item_id", id))
 	}
 	return nil
 }

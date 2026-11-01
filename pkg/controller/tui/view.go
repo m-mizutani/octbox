@@ -28,8 +28,17 @@ const (
 	ageWidth     = 3
 	minTitle     = 10
 	minRepoWidth = 5
-	helpText     = "j/k move  enter open  / filter  m read/unread  A read all  r sync  q quit"
+	// Both fit in 80 columns; j/k is left out to make room.
+	helpTextInbox = "enter open  / filter  m read  e archive  a all  A read all  r sync  q quit"
+	helpTextAll   = "enter open  / filter  m read  e archive  a inbox  A read all  r sync  q quit"
 )
+
+func (m *Model) helpText() string {
+	if m.listedScope == model.FilterScopeAll {
+		return helpTextAll
+	}
+	return helpTextInbox
+}
 
 func (m *Model) View() tea.View {
 	var b strings.Builder
@@ -50,7 +59,7 @@ func (m *Model) View() tea.View {
 	if m.filtering {
 		b.WriteString(m.input.View())
 	} else {
-		b.WriteString(lipgloss.NewStyle().Foreground(colorGray).Render(truncate(helpText, m.width)))
+		b.WriteString(lipgloss.NewStyle().Foreground(colorGray).Render(truncate(m.helpText(), m.width)))
 	}
 
 	v := tea.NewView(b.String())
@@ -67,6 +76,7 @@ func (m *Model) headerLine() string {
 	}
 	accent := lipgloss.NewStyle().Foreground(colorAccent)
 	return accent.Bold(true).Render("octbox") + "  " +
+		accent.Render(string(m.listedScope)) + "  " +
 		accent.Render(fmt.Sprintf("%d unread", unread)) +
 		fmt.Sprintf(" / %d items", len(m.entries))
 }
@@ -79,6 +89,8 @@ func (m *Model) listLines(h int) []string {
 			text = "Syncing with GitHub…"
 		case m.keyword() != "":
 			text = fmt.Sprintf("No items match %q.", m.keyword())
+		case m.listedScope == model.FilterScopeInbox:
+			text = "No items in the inbox. Press a to show all items."
 		default:
 			text = "No items."
 		}
@@ -98,6 +110,9 @@ type rowLayout struct {
 	repo       int
 	title      int
 	showAuthor bool
+	// showMark adds the column telling why the inbox does not list a row;
+	// only the all scope lists such rows.
+	showMark bool
 }
 
 func repoLabel(item *model.Item) string {
@@ -114,12 +129,15 @@ func (m *Model) layout() rowLayout {
 	}
 	repo = min(repo, maxRepoWidth)
 
-	l := rowLayout{repo: repo, showAuthor: m.width >= minimumWideWidth}
+	l := rowLayout{repo: repo, showAuthor: m.width >= minimumWideWidth, showMark: m.listedScope == model.FilterScopeAll}
 	// unread, kind, CI, review and the spaces after each, then the space
 	// after the repository column.
 	fixed := 1 + 1 + 1 + 1 + 1 + 1 + reviewWidth + 1 + 1
 	if l.showAuthor {
 		fixed += 1 + authorWidth + 1 + ageWidth
+	}
+	if l.showMark {
+		fixed += 1 + 1
 	}
 	l.title = m.width - fixed - l.repo
 	if l.title < minTitle {
@@ -189,6 +207,17 @@ func (m *Model) row(e *model.Entry, l rowLayout, selected bool) string {
 	title := titleStyle.Render(pad(truncate(item.Title, l.title), l.title))
 
 	parts := []string{unread, kind, ci, review, repo, title}
+	if l.showMark {
+		// The archive is shown first when both apply: e can end it.
+		mark := " "
+		switch {
+		case e.Archived():
+			mark = "a"
+		case item.ViewerReviewDone():
+			mark = "d"
+		}
+		parts = append([]string{base.Foreground(colorGray).Render(mark)}, parts...)
+	}
 	if l.showAuthor {
 		author := text.Render(pad(truncate("@"+item.Author, authorWidth), authorWidth))
 		age := text.Render(padLeft(formatAge(m.now().Sub(item.UpdatedAt)), ageWidth))

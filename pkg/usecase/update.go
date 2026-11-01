@@ -22,7 +22,9 @@ type UpdateDetector struct {
 	// known maps each stored item to its updatedAt at the previous check,
 	// except items whose review by the viewer was done (Item.ViewerReviewDone):
 	// such an item counts as new when a review is requested from the viewer
-	// again. nil until a list has been read once.
+	// again. Archived items are kept: when the user removes the archive
+	// mark, the pair is known and nothing is shown, while an update that
+	// ends the archive changes the pair. nil until a list has been read once.
 	known map[model.ItemID]time.Time
 }
 
@@ -47,8 +49,8 @@ func (x *UpdateDetector) Start(ctx context.Context) error {
 }
 
 // Check compares the stored items with the known ones and calls ShowUpdate
-// once when at least one unread item has an ID and updatedAt pair that was
-// not known. known is replaced even when ShowUpdate fails, so the same
+// once when at least one unread item the inbox lists (Entry.InInbox) has an
+// ID and updatedAt pair that was not known. known is replaced even when ShowUpdate fails, so the same
 // update is not shown again on the next check.
 func (x *UpdateDetector) Check(ctx context.Context) error {
 	entries, err := x.repo.ListEntries(ctx)
@@ -63,7 +65,7 @@ func (x *UpdateDetector) Check(ctx context.Context) error {
 
 	updated := 0
 	for _, e := range entries {
-		if e.Item.ViewerReviewDone() {
+		if !e.InInbox() {
 			continue
 		}
 		prev, ok := x.known[e.Item.ID]

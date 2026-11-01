@@ -417,7 +417,7 @@ func TestSyncViewerAddressedComments(t *testing.T) {
 	}
 	listed := func(t *testing.T) []model.ItemID {
 		t.Helper()
-		list, err := usecase.NewInbox(repo, &usecasetest.Browser{}).List(ctx, model.NewFilter(""))
+		list, err := usecase.NewInbox(repo, &usecasetest.Browser{}).List(ctx, model.NewFilter("", model.FilterScopeInbox))
 		gt.NoError(t, err).Required()
 		ids := make([]model.ItemID, 0, len(list))
 		for _, e := range list {

@@ -21,6 +21,7 @@ type Inbox interface {
 	List(ctx context.Context, filter model.Filter) ([]*model.Entry, error)
 	Open(ctx context.Context, id model.ItemID) error
 	ToggleRead(ctx context.Context, id model.ItemID) error
+	ToggleArchive(ctx context.Context, id model.ItemID, seenUpdatedAt time.Time) error
 	MarkRead(ctx context.Context, ids []model.ItemID) error
 	SyncState(ctx context.Context) (*model.SyncState, error)
 }
@@ -30,6 +31,7 @@ type SyncEventMsg usecase.SyncEvent
 
 type entriesMsg struct {
 	keyword string
+	scope   model.FilterScope // the scope the list was requested with
 	entries []*model.Entry
 	err     error
 }
@@ -71,6 +73,12 @@ type Model struct {
 
 	input     textinput.Model
 	filtering bool // input line has focus
+	// scope is the scope of the next list request; listedScope is the scope
+	// of entries, which the screen draws. They differ while a list is loading
+	// and after it failed, so the header never names a scope the rows are not
+	// from.
+	scope       model.FilterScope
+	listedScope model.FilterScope
 
 	syncing   bool
 	syncState model.SyncState
@@ -95,14 +103,16 @@ func New(ctx context.Context, inbox Inbox, trigger chan<- struct{}, now func() t
 	input := textinput.New()
 	input.Prompt = "/ "
 	return &Model{
-		ctx:     ctx,
-		inbox:   inbox,
-		trigger: trigger,
-		now:     now,
-		input:   input,
-		width:   defaultWidth,
-		height:  defaultHeight,
-		tick:    tickInterval,
+		ctx:         ctx,
+		inbox:       inbox,
+		trigger:     trigger,
+		now:         now,
+		input:       input,
+		scope:       model.FilterScopeInbox,
+		listedScope: model.FilterScopeInbox,
+		width:       defaultWidth,
+		height:      defaultHeight,
+		tick:        tickInterval,
 		syncState: model.SyncState{
 			RateRemaining: -1,
 		},
@@ -125,11 +135,11 @@ func (m *Model) keyword() string {
 }
 
 func (m *Model) listCmd() tea.Cmd {
-	ctx, inbox, keyword := m.ctx, m.inbox, m.keyword()
+	ctx, inbox, keyword, scope := m.ctx, m.inbox, m.keyword(), m.scope
 	return func() tea.Msg {
-		entries, err := inbox.List(ctx, model.NewFilter(keyword))
+		entries, err := inbox.List(ctx, model.NewFilter(keyword, scope))
 		errutil.Handle(ctx, err, "failed to list items")
-		return entriesMsg{keyword: keyword, entries: entries, err: err}
+		return entriesMsg{keyword: keyword, scope: scope, entries: entries, err: err}
 	}
 }
 
@@ -176,6 +186,24 @@ func (m *Model) toggleCmd(id model.ItemID) tea.Cmd {
 	}
 }
 
+func archiveActionDone(err error) actionDoneMsg {
+	if err != nil {
+		return actionDoneMsg{failure: "Failed to update the archive state."}
+	}
+	return actionDoneMsg{}
+}
+
+// toggleArchiveCmd passes the UpdatedAt of the row on the screen, so that an
+// update stored after the list was read is not archived unseen.
+func (m *Model) toggleArchiveCmd(id model.ItemID, seenUpdatedAt time.Time) tea.Cmd {
+	ctx, inbox := m.ctx, m.inbox
+	return func() tea.Msg {
+		err := inbox.ToggleArchive(ctx, id, seenUpdatedAt)
+		errutil.Handle(ctx, err, "failed to toggle the archive mark")
+		return archiveActionDone(err)
+	}
+}
+
 func (m *Model) markReadCmd(ids []model.ItemID) tea.Cmd {
 	ctx, inbox := m.ctx, m.inbox
 	return func() tea.Msg {
@@ -214,13 +242,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateList(msg)
 
 	case entriesMsg:
-		if msg.keyword != m.keyword() {
-			return m, nil // a response to an older keyword
+		if msg.keyword != m.keyword() || msg.scope != m.scope {
+			return m, nil // a response to an older keyword or scope
 		}
 		if msg.err != nil {
 			m.setFlash(flashError, "Failed to read the local database.", flashDuration)
 			return m, nil
 		}
+		m.listedScope = msg.scope
 		m.setEntries(msg.entries)
 		return m, nil
 
@@ -322,6 +351,19 @@ func (m *Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if e := m.selected(); e != nil {
 			return m, m.toggleCmd(e.Item.ID)
 		}
+	case "e":
+		if e := m.selected(); e != nil {
+			return m, m.toggleArchiveCmd(e.Item.ID, e.Item.UpdatedAt)
+		}
+	case "a":
+		// Toggled from the scope on the screen, so that a failed switch can
+		// be retried with the same key.
+		if m.listedScope == model.FilterScopeAll {
+			m.scope = model.FilterScopeInbox
+		} else {
+			m.scope = model.FilterScopeAll
+		}
+		return m, m.listCmd()
 	case "A":
 		if len(m.entries) > 0 {
 			ids := make([]model.ItemID, len(m.entries))
