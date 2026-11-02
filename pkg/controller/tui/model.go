@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/m-mizutani/goerr/v2"
 
+	"github.com/m-mizutani/octbox/pkg/domain/interfaces"
 	"github.com/m-mizutani/octbox/pkg/domain/model"
 	"github.com/m-mizutani/octbox/pkg/usecase"
 	"github.com/m-mizutani/octbox/pkg/utils/errutil"
@@ -90,6 +91,23 @@ type Model struct {
 
 	width, height int
 	tick          time.Duration // 0 disables the periodic redraw (tests)
+
+	// inputSource, when set, selects the ASCII-capable input source while
+	// the screen has focus and the filter input does not, so the keys of the
+	// list reach the screen while an IME is selected.
+	inputSource interfaces.InputSource
+}
+
+type Option func(*Model)
+
+// WithInputSource makes the screen switch the keyboard input source to the
+// ASCII-capable layout while it has focus, and back to the previous source
+// while the filter input has focus, after the screen loses focus, and on
+// exit.
+func WithInputSource(s interfaces.InputSource) Option {
+	return func(m *Model) {
+		m.inputSource = s
+	}
 }
 
 type flashKind int
@@ -99,10 +117,10 @@ const (
 	flashError
 )
 
-func New(ctx context.Context, inbox Inbox, trigger chan<- struct{}, now func() time.Time) *Model {
+func New(ctx context.Context, inbox Inbox, trigger chan<- struct{}, now func() time.Time, opts ...Option) *Model {
 	input := textinput.New()
 	input.Prompt = "/ "
-	return &Model{
+	m := &Model{
 		ctx:         ctx,
 		inbox:       inbox,
 		trigger:     trigger,
@@ -117,10 +135,35 @@ func New(ctx context.Context, inbox Inbox, trigger chan<- struct{}, now func() t
 			RateRemaining: -1,
 		},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
+// Init selects the ASCII-capable input source because the screen starts in
+// the pane the user typed the command in, which has focus; a terminal does
+// not report focus until it changes.
 func (m *Model) Init() tea.Cmd {
+	m.selectASCIIInput()
 	return tea.Batch(m.listCmd(), m.syncStateCmd(), m.tickCmd())
+}
+
+// The input source is switched synchronously in Update: the macOS API reads
+// the current source correctly only on the main thread, where bubbletea runs
+// Update.
+func (m *Model) selectASCIIInput() {
+	if m.inputSource == nil {
+		return
+	}
+	errutil.Handle(m.ctx, m.inputSource.SelectASCIICapable(), "failed to select the ASCII-capable input source")
+}
+
+func (m *Model) restoreInput() {
+	if m.inputSource == nil {
+		return
+	}
+	errutil.Handle(m.ctx, m.inputSource.RestorePrevious(), "failed to restore the input source")
 }
 
 func (m *Model) tickCmd() tea.Cmd {
@@ -229,6 +272,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scroll()
 		return m, nil
 
+	case tea.FocusMsg:
+		if !m.filtering {
+			m.selectASCIIInput()
+		}
+		return m, nil
+
+	case tea.BlurMsg:
+		m.restoreInput()
+		return m, nil
+
 	case tea.KeyPressMsg:
 		if m.flash != "" && m.flashUntil.IsZero() {
 			m.flash = ""
@@ -300,11 +353,13 @@ func (m *Model) updateFiltering(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.filtering = false
 		m.input.Blur()
+		m.selectASCIIInput()
 		return m, nil
 	case "esc":
 		m.filtering = false
 		m.input.Blur()
 		m.input.Reset()
+		m.selectASCIIInput()
 		return m, m.listCmd()
 	case "down", "ctrl+n":
 		m.move(1)
@@ -346,6 +401,8 @@ func (m *Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filtering = true
 		cmd := m.input.Focus()
 		m.input.CursorEnd()
+		// The keyword may be Japanese.
+		m.restoreInput()
 		return m, cmd
 	case "m":
 		if e := m.selected(); e != nil {

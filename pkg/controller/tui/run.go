@@ -36,7 +36,9 @@ func run(ctx context.Context, m *Model, events <-chan usecase.SyncEvent, opts ..
 		wait()
 	}()
 
-	if _, err := p.Run(); err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+	_, err := p.Run()
+	m.restoreInput()
+	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
 		return goerr.Wrap(err, "failed to run the inbox screen")
 	}
 	return nil

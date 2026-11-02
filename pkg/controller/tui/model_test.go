@@ -723,6 +723,88 @@ func TestScroll(t *testing.T) {
 	gt.Equal(t, selectedID(t, m, inbox), model.ItemID("PR_29"))
 }
 
+// fakeInputSource records the switches as "ascii" and "restore", and keeps
+// the switched state like inputsource.Switcher: a call that changes nothing
+// is not recorded.
+type fakeInputSource struct {
+	mu       sync.Mutex
+	switched bool
+	calls    []string
+}
+
+func (f *fakeInputSource) SelectASCIICapable() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.switched {
+		f.switched = true
+		f.calls = append(f.calls, "ascii")
+	}
+	return nil
+}
+
+func (f *fakeInputSource) RestorePrevious() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.switched {
+		f.switched = false
+		f.calls = append(f.calls, "restore")
+	}
+	return nil
+}
+
+func (f *fakeInputSource) recorded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func newModelWithInputSource(t *testing.T, inbox *fakeInbox) (*tui.Model, *fakeInputSource) {
+	t.Helper()
+	inbox.state.RateRemaining = -1
+	src := &fakeInputSource{}
+	m := tui.New(context.Background(), inbox, make(chan struct{}, 1), func() time.Time { return now }, tui.WithInputSource(src))
+	tui.DisableTick(m)
+	run(t, m, m.Init())
+	return m, src
+}
+
+func TestInputSourceFollowsTheFilterInput(t *testing.T) {
+	inbox := &fakeInbox{entries: threeEntries()}
+	m, src := newModelWithInputSource(t, inbox)
+	gt.Equal(t, src.recorded(), []string{"ascii"})
+	gt.True(t, m.View().ReportFocus)
+
+	press(t, m, "/")
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore"})
+	press(t, m, "a", "enter")
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore", "ascii"})
+
+	press(t, m, "/", "esc")
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore", "ascii", "restore", "ascii"})
+}
+
+func TestInputSourceFollowsFocus(t *testing.T) {
+	inbox := &fakeInbox{entries: threeEntries()}
+	m, src := newModelWithInputSource(t, inbox)
+
+	m.Update(tea.BlurMsg{})
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore"})
+	m.Update(tea.FocusMsg{})
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore", "ascii"})
+
+	// Focus that returns to the filter input keeps the previous source for
+	// typing the keyword.
+	press(t, m, "/")
+	m.Update(tea.BlurMsg{})
+	m.Update(tea.FocusMsg{})
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore", "ascii", "restore"})
+}
+
+func TestNoInputSourceDoesNotReportFocus(t *testing.T) {
+	m, _ := newModel(t, &fakeInbox{entries: threeEntries()})
+	gt.False(t, m.View().ReportFocus)
+}
+
 // BenchmarkFilterKeystroke covers the 50 ms requirement for one keystroke
 // over 1,000 items: the list call and a full redraw.
 func BenchmarkFilterKeystroke(b *testing.B) {

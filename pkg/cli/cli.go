@@ -38,7 +38,8 @@ type deps struct {
 	herdrPane func() herdrPane
 	// startInbox runs the full-screen inbox with a token that GitHub accepted
 	// or that is stored.
-	startInbox func(ctx context.Context, d *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration) error
+	// inputSource is nil when the input source is not switched.
+	startInbox func(ctx context.Context, d *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration, inputSource interfaces.InputSource) error
 }
 
 func defaultDeps() *deps {
@@ -72,12 +73,14 @@ func run(ctx context.Context, args []string, version string, d *deps) error {
 		storage   config.Storage
 		gh        config.GitHub
 		syncCfg   config.Sync
+		keyboard  config.Keyboard
 		logCloser io.Closer
 	)
 
 	flags := append(logger.Flags(), storage.Flags()...)
 	flags = append(flags, gh.Flags()...)
 	flags = append(flags, syncCfg.Flags()...)
+	flags = append(flags, keyboard.Flags()...)
 
 	app := &cli.Command{
 		Name:      "octbox",
@@ -95,7 +98,7 @@ func run(ctx context.Context, args []string, version string, d *deps) error {
 			return ctx, nil
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
-			return runInbox(ctx, d, &storage, &gh, &syncCfg)
+			return runInbox(ctx, d, &storage, &gh, &syncCfg, &keyboard)
 		},
 		Commands: []*cli.Command{
 			cmdAuth(d, &storage, &gh),
@@ -129,6 +132,8 @@ func userMessage(err error) string {
 		return "GitHub rejected the token; run `octbox auth login` again"
 	case errors.Is(err, interfaces.ErrSchemaTooNew):
 		return "the database was created by a newer version of octbox"
+	case errors.Is(err, interfaces.ErrInputSourceUnsupported):
+		return "--switch-ascii-input-source is supported only on macOS"
 	case errors.Is(err, context.Canceled):
 		return "cancelled"
 	}

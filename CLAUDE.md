@@ -8,7 +8,7 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
 - `pkg/cli/` — flags, environment variables, dependency wiring, the root
   command (the inbox) and `auth login` / `auth logout`. Each flag is defined
   once in a flag group of `pkg/cli/config` (`Logger`, `Storage`, `GitHub`,
-  `Sync`). Default values come from the flag definitions.
+  `Sync`, `Keyboard`). Default values come from the flag definitions.
 - `pkg/controller/tui/` — the full-screen inbox (bubbletea). Turns key
   presses into `usecase.Inbox` calls and draws the result. Holds display state
   only (selection, filter input, last sync state); no business decision, no
@@ -36,10 +36,12 @@ the user. It is a single Go binary; the layout follows m-mizutani/robin.
   errors (`interfaces/`). No I/O.
 - `pkg/repository/sqlite/` — persistence in one SQLite file
   (`modernc.org/sqlite`, no cgo). Schema version in `PRAGMA user_version`.
-- `pkg/adapter/{github,securestore,browser,herdr}/` — thin wrappers over
+- `pkg/adapter/{github,securestore,browser,herdr,inputsource}/` — thin wrappers over
   GitHub (GraphQL, notifications REST, device flow), the OS secure storage
   (go-keyring on macOS and Linux, chosen by build tags), the OS command that
-  opens a URL, and herdr's socket API (reports the pane state and renames the
+  opens a URL, the macOS keyboard input source (Carbon through purego, no
+  cgo; its init locks the main goroutine to the main thread, where the TUI
+  calls it), and herdr's socket API (reports the pane state and renames the
   tab or pane; used only when `HERDR_ENV=1`, `HERDR_PANE_ID` and
   `HERDR_SOCKET_PATH` are set). No business decisions.
 - `pkg/utils/` — `logging`, `errutil`, `safe`, `async`.

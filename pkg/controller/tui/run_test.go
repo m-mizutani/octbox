@@ -32,3 +32,14 @@ func TestRunReturnsWhenTheUserQuits(t *testing.T) {
 		t.Fatal("Run did not return after q")
 	}
 }
+
+func TestRunRestoresTheInputSourceOnExit(t *testing.T) {
+	inbox := &fakeInbox{entries: threeEntries()}
+	src := &fakeInputSource{}
+	m := tui.New(context.Background(), inbox, make(chan struct{}, 1), func() time.Time { return now }, tui.WithInputSource(src))
+
+	err := tui.RunWithOptions(context.Background(), m, make(chan usecase.SyncEvent),
+		tea.WithInput(strings.NewReader("q")), tea.WithOutput(io.Discard), tea.WithWindowSize(80, 24))
+	gt.NoError(t, err)
+	gt.Equal(t, src.recorded(), []string{"ascii", "restore"})
+}
