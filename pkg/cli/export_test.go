@@ -33,7 +33,7 @@ func RunForTest(ctx context.Context, args []string, td TestDeps) error {
 		newBrowser: func() interfaces.Browser { return td.Browser },
 		// startInbox is replaced, so the inbox never asks for a herdr pane.
 		herdrPane: func() herdrPane { return nil },
-		startInbox: func(ctx context.Context, _ *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration) error {
+		startInbox: func(ctx context.Context, _ *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration, _ interfaces.InputSource) error {
 			return td.StartInbox(ctx, token, repo, interval)
 		},
 	}

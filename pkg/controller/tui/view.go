@@ -64,6 +64,7 @@ func (m *Model) View() tea.View {
 
 	v := tea.NewView(b.String())
 	v.AltScreen = true
+	v.ReportFocus = m.inputSource != nil
 	return v
 }
 

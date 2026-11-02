@@ -107,6 +107,11 @@ octbox detects herdr from the variables herdr sets in its panes (`HERDR_ENV=1`, 
 | `--log-file` | `OCTBOX_LOG_FILE` | `~/.octbox/octbox.log` | Log file (appended) |
 | `--log-level` | `OCTBOX_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `--client-id` | `OCTBOX_CLIENT_ID` | octbox's OAuth app | Client ID of the OAuth app used for login |
+| `--switch-ascii-input-source` | `OCTBOX_SWITCH_ASCII_INPUT_SOURCE` | `true` | macOS only. Switch the keyboard input source while octbox has focus (see below). On other OSes the default is ignored, and `true` given by the flag or the variable is an error. |
+
+### Keys with an input method (IME)
+
+While a Japanese or other input method is selected, the keys you press go to the input method, and octbox receives nothing until you confirm the text. On macOS, octbox therefore selects the ASCII-capable keyboard layout (such as ABC) when it starts and when its terminal or herdr pane gets focus, so its keys work directly. It selects the previous input source again when you start typing a filter with `/` (so the keyword can be Japanese), when its terminal or pane loses focus, and when it quits; it selects the ASCII-capable layout again when the filter input ends. The input source is a setting of macOS, so the change also applies to other applications while octbox has focus. Focus changes are known only from terminals that report focus (`CSI ?1004h`). To keep the input source unchanged, pass `--switch-ascii-input-source=false` or set `OCTBOX_SWITCH_ASCII_INPUT_SOURCE=false`.
 
 The database and the log file are created with mode `0600` in a `0700` directory. The token is stored only in the OS secure storage (service `octbox`, account `github-token`), never in the database or the log.
 

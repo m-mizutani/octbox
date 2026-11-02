@@ -39,6 +39,10 @@ var (
 	// ErrUnsupportedOS is returned by the browser on an OS without a known
 	// command to open a URL.
 	ErrUnsupportedOS = errors.New("opening a browser is not supported on this OS")
+
+	// ErrInputSourceUnsupported is returned when the keyboard input source
+	// cannot be switched on this OS.
+	ErrInputSourceUnsupported = errors.New("switching the keyboard input source is supported only on macOS")
 )
 
 // RateLimitedError is returned when GitHub asks the client to wait.

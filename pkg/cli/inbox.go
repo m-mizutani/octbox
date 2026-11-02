@@ -17,8 +17,12 @@ import (
 
 // runInbox gets a token (logging in first when none is stored) and opens the
 // inbox.
-func runInbox(ctx context.Context, d *deps, storage *config.Storage, gh *config.GitHub, syncCfg *config.Sync) error {
+func runInbox(ctx context.Context, d *deps, storage *config.Storage, gh *config.GitHub, syncCfg *config.Sync, keyboard *config.Keyboard) error {
 	interval, err := syncCfg.Interval()
+	if err != nil {
+		return err
+	}
+	inputSource, err := keyboard.NewInputSource()
 	if err != nil {
 		return err
 	}
@@ -37,7 +41,7 @@ func runInbox(ctx context.Context, d *deps, storage *config.Storage, gh *config.
 	if err != nil {
 		return err
 	}
-	return d.startInbox(ctx, d, token, repo, interval)
+	return d.startInbox(ctx, d, token, repo, interval, inputSource)
 }
 
 // herdrPane is the herdr pane octbox runs in: its sidebar status shows new
@@ -64,7 +68,7 @@ func lookupHerdrPane(lookup func(string) (string, bool)) herdrPane {
 	return herdr.New(socketPath, paneID)
 }
 
-func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration) error {
+func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo interfaces.Repository, interval time.Duration, inputSource interfaces.InputSource) error {
 	syncer := usecase.NewSyncer(d.newClient(token), repo, interval)
 	inbox := usecase.NewInbox(repo, d.newBrowser())
 
@@ -104,7 +108,7 @@ func startInbox(ctx context.Context, d *deps, token model.GitHubToken, repo inte
 		})
 	})
 
-	err := tui.Run(ctx, tui.New(ctx, inbox, trigger, time.Now), events)
+	err := tui.Run(ctx, tui.New(ctx, inbox, trigger, time.Now, tui.WithInputSource(inputSource)), events)
 	cancel()
 	wait()
 	waitReport()
